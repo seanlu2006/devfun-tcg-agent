@@ -1,0 +1,19 @@
+{
+  "name": "starter_dark",
+  "thesis": "流程測試用：只用基礎 ex 寶可夢（不用進化），惡能量單色，三能量打 190～210。還沒調整過，正式牌組由 Sean 決定。",
+  "cards": [
+    {"id": 1062, "count": 4, "name": "Yveltal ex"},
+    {"id": 139,  "count": 4, "name": "Munkidori ex"},
+    {"id": 138,  "count": 4, "name": "Okidogi ex"},
+    {"id": 1002, "count": 2, "name": "Zangoose ex"},
+    {"id": 1121, "count": 4, "name": "Ultra Ball"},
+    {"id": 1122, "count": 4, "name": "Pokégear 3.0"},
+    {"id": 1227, "count": 4, "name": "Lillie's Determination"},
+    {"id": 1182, "count": 2, "name": "Boss’s Orders"},
+    {"id": 1123, "count": 4, "name": "Switch"},
+    {"id": 1118, "count": 2, "name": "Energy Retrieval"},
+    {"id": 1119, "count": 4, "name": "Energy Search"},
+    {"id": 1097, "count": 2, "name": "Night Stretcher"},
+    {"id": 7,    "count": 20, "name": "Basic {D} Energy"}
+  ]
+}

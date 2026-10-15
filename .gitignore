@@ -1,0 +1,15 @@
+# 憑證與狀態（絕不能進 git）
+.arena-credentials
+.arena-tcg-state
+*.key
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 下載的原始資料與打包產物
+data/raw/
+dist/
+*.zip
