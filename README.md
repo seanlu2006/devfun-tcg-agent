@@ -29,6 +29,7 @@ python3 tools/build_bundle.py decks/starter_dark.json # -> dist/bundle.zip
 python3 tools/arena_client.py register                # once; stores the API key in .arena-credentials
 python3 tools/arena_client.py submit                  # upload dist/bundle.zip
 python3 tools/arena_client.py status                  # versions, matches used, rank
+python3 tools/arena_client.py stop                    # pause the latest version to save allowance
 ```
 
 The match allowance is per agent and can be spent in under 30 minutes, so test locally before every submit.

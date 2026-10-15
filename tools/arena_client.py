@@ -5,6 +5,7 @@
   python3 tools/arena_client.py claim                 再印一次 X 驗證連結、看驗證狀態
   python3 tools/arena_client.py submit [bundle.zip]   上傳 dist/bundle.zip，等它變成 Active
   python3 tools/arena_client.py status                看每個版本的戰績、整季剩幾場、目前排名
+  python3 tools/arena_client.py stop                  暫停最新版本（省場數；進行中的那場會先打完）
 
 API key 只會出現一次、遺失無法找回：它只存在 .arena-credentials（已列入 .gitignore、權限 600），
 本程式不會把完整的 key 印到螢幕上。欄位名稱以官方 introspection 為準（data/raw/introspection.json）。
@@ -187,6 +188,25 @@ def status():
         print("還不在排行榜上（要 X 驗證、而且打滿 5 場）")
 
 
+def stop():
+    """暫停最新一個版本（省場數）。官方：要等 activeMatchCount 為 0 才能停，進行中的那場會先打完。"""
+    cred = load_credentials()
+    state = load_state()
+    if not state["submissions"]:
+        sys.exit("還沒有上傳過任何版本")
+    sub_id = state["submissions"][-1]["id"]
+    for _ in range(60):  # 最多等約 5 分鐘讓進行中的對戰結束
+        status, data = request("POST", f"/submissions/{sub_id}/stop", key=cred["apiKey"])
+        if status < 300:
+            print(f"已暫停 {sub_id}。剩下的場數會留給下一個版本。")
+            return
+        if "in_use" not in json.dumps(data):
+            sys.exit(f"暫停失敗（HTTP {status}）：{data}")
+        print("  還有對戰在進行，等它打完…")
+        time.sleep(5)
+    sys.exit("等太久了，晚點再執行一次 stop")
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "register":
@@ -197,6 +217,8 @@ def main():
         submit(Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "dist" / "bundle.zip")
     elif cmd == "status":
         status()
+    elif cmd == "stop":
+        stop()
     else:
         print(__doc__)
 
