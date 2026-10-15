@@ -32,6 +32,8 @@ def validate(deck):
 
     for entry in deck["cards"]:
         card = CARDS.get(entry["id"])
+        if not isinstance(entry.get("count"), int) or entry["count"] < 1:
+            errors.append(f"cardId {entry['id']} 的 count 必須是正整數")
         if card is None:
             errors.append(f"cardId {entry['id']} 不在卡池裡")
         elif entry.get("name") and entry["name"] != card["name"]:
@@ -41,9 +43,15 @@ def validate(deck):
 
     if len(ids) != 60:
         errors.append(f"總張數 {len(ids)}，必須剛好 60")
+    # 4 張上限按「卡名」合計：卡池裡有 154 個名字對應多個 cardId（不同版本），
+    # 伺服器若按名稱算，拆成兩個版本各 4 張會被拒。按名稱算比較嚴，也比較保險。
+    by_name = Counter()
     for cid, n in counts.items():
-        if CARDS[cid]["cardType"] != BASIC_ENERGY and n > 4:
-            errors.append(f"{CARDS[cid]['name']} 有 {n} 張，上限 4")
+        if CARDS[cid]["cardType"] != BASIC_ENERGY:
+            by_name[CARDS[cid]["name"]] += n
+    for card_name, n in by_name.items():
+        if n > 4:
+            errors.append(f"{card_name} 有 {n} 張（同名不同版本合計），上限 4")
     ace = sum(n for cid, n in counts.items() if CARDS[cid].get("aceSpec"))
     if ace > 1:
         errors.append(f"ACE SPEC 共 {ace} 張，上限 1")

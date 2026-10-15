@@ -39,29 +39,51 @@ CARD_SPECIAL_ENERGY = 6
 FORFEIT = "__forfeit__"
 MAX_ACTIONS_PER_TURN = 40  # 保險：一個回合動作太多就收手，避免卡在某種循環裡
 
+# 會改變誰在戰鬥場的卡：亂出會把自己充好能量的主攻手換下場，v0 先不出（見 score_main_option）
+BOARD_CHANGING_CARDS = {
+    "Switch", "Scramble Switch", "Energy Switch", "Prime Catcher",
+    "Boss’s Orders", "Boss's Orders",
+}
 
-# ---------------------------------------------------------------- 卡牌資料（隨 bundle 打包）
+
+# ---------------------------------------------------------------- 卡牌資料
+# tools/build_bundle.py 打包時，會把 assets/catalog.json 的內容直接寫進下面這一行，
+# 讓 bundle 完全不依賴「檔案在哪」。本機開發時它是 None，改從 assets/ 讀檔。
+_EMBEDDED_CATALOG = None
+
+
 def _catalog_paths():
     paths = []
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         paths.append(os.path.join(here, "..", "assets", "catalog.json"))
-    except NameError:  # 有些執行環境沒有 __file__
+    except Exception:  # 有些執行環境沒有 __file__
         pass
-    paths.append(os.path.join(os.getcwd(), "assets", "catalog.json"))
+    try:
+        paths.append(os.path.join(os.getcwd(), "assets", "catalog.json"))
+    except Exception:
+        pass
     return paths
 
 
+def _parse_catalog(raw):
+    cards = {int(k): v for k, v in raw["cards"].items()}
+    attacks = {int(k): v for k, v in raw["attacks"].items()}
+    return cards, attacks
+
+
 def _load_catalog():
-    for path in _catalog_paths():
-        try:
-            with open(path, encoding="utf-8") as f:
-                raw = json.load(f)
-            cards = {int(k): v for k, v in raw["cards"].items()}
-            attacks = {int(k): v for k, v in raw["attacks"].items()}
-            return cards, attacks
-        except Exception:
-            continue
+    try:
+        if _EMBEDDED_CATALOG:
+            return _parse_catalog(json.loads(_EMBEDDED_CATALOG))
+        for path in _catalog_paths():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return _parse_catalog(json.load(f))
+            except Exception:
+                continue
+    except Exception:
+        pass
     return {}, {}  # 讀不到就當沒有資料，策略會退回保守做法
 
 
@@ -77,9 +99,23 @@ def attack_info(attack_id):
 
 
 def parse_action(action):
-    """'[0,2]' → [0, 2]；'[]' → []。"""
-    inner = action.strip()[1:-1]
-    return [int(x) for x in inner.split(",") if x.strip()]
+    """'[0,2]' → [0, 2]；'[]' → []；格式不對（例如 '__forfeit__'）→ None。"""
+    try:
+        text = action.strip()
+        if not (text.startswith("[") and text.endswith("]")):
+            return None
+        return [int(x) for x in text[1:-1].split(",") if x.strip()]
+    except (AttributeError, ValueError):
+        return None
+
+
+def single_pick(board, action):
+    """單選動作對應的 option；不是單選或索引超出範圍就回傳 None。"""
+    picks = parse_action(action)
+    if picks is None or len(picks) != 1 or not 0 <= picks[0] < len(board.options):
+        return None
+    option = board.options[picks[0]]
+    return option if isinstance(option, dict) else None
 
 
 # ---------------------------------------------------------------- 盤面工具
@@ -161,6 +197,10 @@ def score_main_option(board, option):
     if kind == OPT_PLAY_FROM_HAND:
         card = card_info(board.hand_card_id(option.get("index", 0)))
         card_type = card.get("cardType")
+        if card.get("name") in BOARD_CHANGING_CARDS:
+            # TODO(Sean)：這類卡要配合條件才出，例如戰鬥場打不出招式時才 Switch、
+            # 對手備戰區有殘血 ex 時才 Boss's Orders。v0 一律不出，以免把自己的主攻手換下場。
+            return -1
         if card_type == CARD_POKEMON and card.get("basic"):
             return 70 if board.bench_space() > 0 else -1
         if card_type in (CARD_ITEM, CARD_SUPPORTER):
@@ -186,15 +226,15 @@ def score_main_option(board, option):
 
 
 def choose_main(board, legal):
-    if board.turn_action_count > MAX_ACTIONS_PER_TURN:
-        return pick_by_type(board, legal, (OPT_ATTACK, OPT_END_TURN))
-
+    stop_setting_up = board.turn_action_count > MAX_ACTIONS_PER_TURN
     best, best_score = None, None
     for action in legal:
-        picks = parse_action(action)
-        if len(picks) != 1 or picks[0] >= len(board.options):
+        option = single_pick(board, action)
+        if option is None:
             continue
-        score = score_main_option(board, board.options[picks[0]])
+        if stop_setting_up and option.get("type") not in (OPT_ATTACK, OPT_END_TURN):
+            continue  # 動作太多了：只在攻擊與結束回合之間選
+        score = score_main_option(board, option)
         if best_score is None or score > best_score:
             best, best_score = action, score
     return best
@@ -216,8 +256,8 @@ def pick_by_type(board, legal, wanted_types):
     """照 wanted_types 的順序，挑第一個種類符合的單選動作。"""
     for wanted in wanted_types:
         for action in legal:
-            picks = parse_action(action)
-            if len(picks) == 1 and picks[0] < len(board.options) and board.options[picks[0]].get("type") == wanted:
+            option = single_pick(board, action)
+            if option is not None and option.get("type") == wanted:
                 return action
     return None
 
@@ -238,14 +278,19 @@ def safe_default(legal):
 
 
 def act(context):
-    legal = [a for a in (context.get("legalActions") or []) if isinstance(a, str)]
+    """平台的入口。整個包在 try 裡：任何錯誤都不能冒出去（冒出去＝這場直接判輸）。"""
+    legal = []
     try:
-        choice = decide(context.get("observation") or {}, legal)
+        legal = [a for a in (context.get("legalActions") or []) if isinstance(a, str)]
+        choice = decide(context.get("observation") or {}, [a for a in legal if parse_action(a) is not None])
         if choice in legal and choice != FORFEIT:
             return choice
+        return safe_default(legal)
     except Exception:
-        pass  # 不讓任何錯誤冒出去：冒出去＝這場直接判輸
-    return safe_default(legal)
+        try:
+            return safe_default(legal)
+        except Exception:
+            return "[0]"
 
 
 choose_action = act  # 平台也接受 choose_action 這個名字

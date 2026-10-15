@@ -4,10 +4,10 @@
   python3 tools/arena_client.py register              註冊 agent，key 存進 .arena-credentials，印出 X 驗證連結
   python3 tools/arena_client.py claim                 再印一次 X 驗證連結、看驗證狀態
   python3 tools/arena_client.py submit [bundle.zip]   上傳 dist/bundle.zip，等它變成 Active
-  python3 tools/arena_client.py status                看所有版本的狀態、已用掉的場數、目前排名
+  python3 tools/arena_client.py status                看每個版本的戰績、整季剩幾場、目前排名
 
 API key 只會出現一次、遺失無法找回：它只存在 .arena-credentials（已列入 .gitignore、權限 600），
-本程式不會把完整的 key 印到螢幕上。
+本程式不會把完整的 key 印到螢幕上。欄位名稱以官方 introspection 為準（data/raw/introspection.json）。
 """
 import json
 import os
@@ -24,13 +24,20 @@ ROOT = Path(__file__).resolve().parent.parent
 CREDENTIALS = ROOT / ".arena-credentials"
 STATE = ROOT / ".arena-tcg-state"
 
+TERMINAL_STATUSES = {"Active", "Failed", "Cancelled", "TimedOut", "Completed", "Succeeded"}
+TRANSIENT_ERRORS = {"engine_submission_version_busy"}  # 官方說明：等幾秒、用同一個 bundle 重試
+
 
 def request(method, path, body=None, key=None, content_type="application/json"):
-    headers = {"User-Agent": "devfun-tcg-agent", "Content-Type": content_type}
+    headers = {"User-Agent": "devfun-tcg-agent"}
     if key:
         headers["x-arena-api-key"] = key
-    if body is not None and content_type == "application/json":
-        body = json.dumps(body).encode()
+    if method == "POST" and body is None:
+        body = {}  # 伺服器（Fastify）拒絕「宣告 JSON 卻沒有 body」的請求
+    if body is not None:
+        headers["Content-Type"] = content_type
+        if content_type == "application/json":
+            body = json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -49,12 +56,19 @@ def load_credentials():
     return json.loads(CREDENTIALS.read_text())
 
 
+def write_secret(path, text):
+    """一建立就是 600 權限，不會有「先寫入、再改權限」的空窗。"""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
 def load_state():
     return json.loads(STATE.read_text()) if STATE.exists() else {"competition_id": COMPETITION_ID, "submissions": []}
 
 
 def save_state(state):
-    tmp = STATE.with_suffix(".tmp")
+    tmp = STATE.with_name(STATE.name + ".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
     tmp.replace(STATE)  # 先寫暫存檔再改名，避免寫到一半壞掉
 
@@ -68,8 +82,7 @@ def register():
     status, data = request("POST", "/auth/register", {"handle": handle, "name": name, "quote": quote})
     if status >= 300 or "apiKey" not in data:
         sys.exit(f"註冊失敗（HTTP {status}）：{data}")
-    CREDENTIALS.write_text(json.dumps({"apiKey": data["apiKey"], "agentId": data["agentId"]}))
-    os.chmod(CREDENTIALS, 0o600)
+    write_secret(CREDENTIALS, json.dumps({"apiKey": data["apiKey"], "agentId": data["agentId"]}))
     print(f"註冊成功：agentId {data['agentId']}，key 前綴 {data.get('apiKeyPrefix', data['apiKey'][:12])}…")
     print(f"完整的 key 存在 {CREDENTIALS}（這是唯一一份，請另外備份到密碼管理器）。")
     claim()
@@ -78,13 +91,17 @@ def register():
 def claim():
     cred = load_credentials()
     status, data = request("GET", "/auth/claim/status", key=cred["apiKey"])
+    if status >= 300:
+        sys.exit(f"查詢驗證狀態失敗（HTTP {status}）：{data}")
     if data.get("claimed") or data.get("xVerifiedAt"):
         print(f"已經用 X 驗證過了（@{data.get('xHandle')}）。")
         return
     url = data.get("claimUrl")
     if not url:
-        _, init = request("POST", "/auth/claim/init", key=cred["apiKey"])
+        status, init = request("POST", "/auth/claim/init", key=cred["apiKey"])
         url = init.get("claimUrl")
+        if not url:
+            sys.exit(f"拿不到驗證連結（HTTP {status}）：{init}")
     print(f"還沒驗證。用瀏覽器打開這個連結、連上你的 X 帳號：\n  {url}")
     print("沒驗證也能打，但不會上排行榜、也領不到獎金。")
 
@@ -102,12 +119,22 @@ def multipart(fields, file_field, file_path):
 
 
 def submit(bundle_path):
+    if not bundle_path.exists():
+        sys.exit(f"找不到 {bundle_path}，先跑 tools/build_bundle.py")
     cred = load_credentials()
-    body, ctype = multipart({"competitionId": COMPETITION_ID, "template": "engine-agent"}, "bundle", bundle_path)
-    status, data = request("POST", "/submissions", body, key=cred["apiKey"], content_type=ctype)
-    if status >= 300:
-        sys.exit(f"上傳被拒（HTTP {status}）：{data}\n錯誤代碼的意思見 docs/protocol.md 與官方 tcg-playground.md。")
-    sub_id = data.get("id") or data.get("submissionId") or (data.get("submission") or {}).get("id")
+    # introspection：必填欄位是 competitionId 與 file（官方 md 寫 bundle，兩者衝突時以 introspection 為準）
+    body, ctype = multipart({"competitionId": COMPETITION_ID, "template": "engine-agent"}, "file", bundle_path)
+    for attempt in range(4):
+        status, data = request("POST", "/submissions", body, key=cred["apiKey"], content_type=ctype)
+        transient = status >= 500 or data.get("errorCode") in TRANSIENT_ERRORS or data.get("code") in TRANSIENT_ERRORS
+        if not transient:
+            break
+        print(f"  暫時性錯誤（HTTP {status}），{5 * (attempt + 1)} 秒後用同一個 bundle 重試…")
+        time.sleep(5 * (attempt + 1))
+    if status >= 300 or not data.get("id"):
+        sys.exit(f"上傳被拒（HTTP {status}）：{data}\n錯誤代碼的意思見官方 tcg-playground.md 的 Submission rejected 段。")
+
+    sub_id = data["id"]
     state = load_state()
     state["submissions"].append({"id": sub_id, "bundle": str(bundle_path), "at": time.strftime("%Y-%m-%d %H:%M:%S")})
     save_state(state)
@@ -115,30 +142,47 @@ def submit(bundle_path):
     for _ in range(60):  # 最多等約 5 分鐘
         time.sleep(5)
         _, info = request("GET", f"/submissions/{sub_id}", key=cred["apiKey"])
-        st = info.get("status") or (info.get("submission") or {}).get("status")
+        st = info.get("status")
         print("  狀態：", st)
-        if st in ("Active", "Failed"):
-            if st == "Failed":
-                print("失敗原因：", info.get("error") or info)
+        if st in TERMINAL_STATUSES:
+            if st != "Active":
+                print("沒有變成 Active：", info.get("errorCode"), info.get("error"))
             break
+
+
+def find_on_leaderboard(agent_id):
+    offset = 0
+    while True:
+        status, board = request("GET", f"/competition/leaderboard?competitionId={COMPETITION_ID}&limit=100&offset={offset}")
+        if status >= 300:
+            return None, f"讀排行榜失敗（HTTP {status}）：{board}"
+        rows = board.get("data") or []
+        for row in rows:
+            if (row.get("agent") or {}).get("id") == agent_id:
+                return row, None
+        offset += len(rows)
+        if not rows or offset >= board.get("total", 0):
+            return None, None
 
 
 def status():
     cred = load_credentials()
     state = load_state()
-    used = 0
+    latest_allowance = None
     for sub in state["submissions"]:
         _, info = request("GET", f"/submissions/{sub['id']}", key=cred["apiKey"])
-        body = info.get("submission") or info
-        used += body.get("matchesPlayed") or 0
-        allowance = (body.get("engine") or {}).get("allowance")
-        print(f"{sub['id']}｜{body.get('status')}｜這個版本打了 {body.get('matchesPlayed')} 場｜allowance {allowance}")
-    print(f"所有版本合計已用 {used} 場（平台不會告訴你總數，要自己加）")
-    _, board = request("GET", f"/competition/leaderboard?competitionId={COMPETITION_ID}&limit=200")
-    for row in board.get("data") or []:
-        if (row.get("agent") or {}).get("id") == cred["agentId"]:
-            print(f"排行榜：第 {row.get('rank')} 名，rating {row.get('rating') or row.get('totalScore')}")
-            break
+        engine = info.get("engine") or {}
+        rating = engine.get("rating") or {}
+        latest_allowance = engine.get("allowance") or latest_allowance
+        print(f"{sub['id']}｜{info.get('status')}｜這個版本 {rating.get('matchesPlayed')} 場、"
+              f"{rating.get('wins')} 勝 {rating.get('losses')} 敗｜{(engine.get('activity') or {}).get('state')}")
+    if latest_allowance:
+        print(f"整季場數：上限 {latest_allowance['limit']}，已用 {latest_allowance['used']}，剩 {latest_allowance['remaining']}")
+    row, err = find_on_leaderboard(cred["agentId"])
+    if err:
+        print(err)
+    elif row:
+        print(f"排行榜：第 {row.get('rank')} 名，分數 {row.get('totalScore')}")
     else:
         print("還不在排行榜上（要 X 驗證、而且打滿 5 場）")
 

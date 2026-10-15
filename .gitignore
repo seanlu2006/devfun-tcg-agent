@@ -1,6 +1,5 @@
 # 憑證與狀態（絕不能進 git）
-.arena-credentials
-.arena-tcg-state
+.arena-*
 *.key
 .env
 
