@@ -98,6 +98,7 @@ def synthetic_cases(strategy):
         ("場上已有 2 隻 Dragapult ex：不把最後一隻 Drakloak 也進化掉", last_drakloak_case(strategy), "[1]"),
         ("競技場 Lumiose City 的特性會結束回合：先貼能量", lumiose_case(strategy), "[1]"),
         ("惡能量：貼給還沒有惡能量的 Munkidori（特性要用），不貼 Fezandipiti ex", munkidori_case(strategy), "[1]"),
+        ("前排 Dragapult ex 剩 80 HP 會被打倒、後排有滿血備好的：先撤退換人", healthy_swap_case(strategy), "[0]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -258,6 +259,21 @@ def munkidori_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def healthy_swap_case(strategy):
+    """選項 [0] 撤退、[1] Phantom Dive；對手戰鬥場是火＋超備好的 Dragapult ex（Phantom Dive 200）。"""
+    ids = _ids(strategy)
+    atk = {strategy.attack_info(a)["name"]: a for a in strategy.card_info(ids["Dragapult ex"])["attacks"]}
+    hurt = {"id": ids["Dragapult ex"], "hp": 80, "maxHp": 320, "energies": [2, 5, 7]}
+    fresh = {"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}
+    opp = {"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}
+    players = [{"active": [hurt], "bench": [fresh], "benchMax": 5, "hand": [], "deckCount": 20},
+               {"active": [opp], "bench": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "benchMax": 5}]
+    options = [{"type": 12}, {"type": 13, "attackId": atk["Phantom Dive"]}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
 
 
 def iter_decision_points():

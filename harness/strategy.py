@@ -387,6 +387,30 @@ class Board:
                 return True
         return False
 
+    def opp_threat(self, defender):
+        """對手戰鬥場「現在付得起」的招式打 defender 的最高估計傷害（變動傷害的招式算基礎值，會低估）。"""
+        attacker = self.opp_active
+        if not attacker or not defender:
+            return 0
+        best = 0
+        for attack_id in card_info(attacker.get("id")).get("attacks") or []:
+            if not missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
+                best = max(best, self.damage_against(attack_id, attacker, defender))
+        return best
+
+    def healthy_swap_available(self):
+        """戰鬥場那隻下回合會被打倒，備戰區有一隻「現在戰力不輸它、而且挨得住」的 → 撤退換牠上來。
+        撤退不會結束回合，換上來的照樣能攻擊；代價只是受傷那隻丟 1 個能量。
+        （Codex 對局分析 49b04e7c T11：前排 Dragapult 剩 80 HP、後排滿血 Dragapult 已備好，照打 Phantom Dive，
+         下回合前排被打倒、對手拿到最後的獎賞卡）"""
+        active = self.my_active
+        threat = self.opp_threat(active)
+        if not active or threat < (active.get("hp") or 0):
+            return False
+        power = self.power_now(active)
+        return any(self.power_now(m) >= max(power, 60) and (m.get("hp") or 0) > self.opp_threat(m)
+                   for m in self.me.get("bench") or [])
+
     def best_damage_now(self):
         """主要回合裡「現在合法的招式」能打出的最高估計傷害（打對手戰鬥場）。"""
         best = 0
@@ -471,7 +495,7 @@ def score_main_option(board, option):
 
     if kind == OPT_RETREAT:
         # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
-        return SCORE["retreat_ready"] if board.better_attacker_on_bench() else -10
+        return SCORE["retreat_ready"] if board.better_attacker_on_bench() or board.healthy_swap_available() else -10
 
     if kind == OPT_END_TURN:
         return SCORE["end_turn"]
@@ -804,8 +828,11 @@ def pokemon_value(board, mon, side):
         return (-1, 0, 0)
     energies = len(mon.get("energies") or [])
     if side == "me":
+        # 先看「現在能打多少」，再看能量數（Codex 對局分析：以前會推出有 1 個能量、卻還不能攻擊的 Drakloak，
+        # 而不是撤退費 0 的 Budew；高手對照 3 比 2）。上場後還會被打倒的，排在挨得住的後面
         atk = best_attack(mon.get("id"))
-        return (energies, 1 if board.can_attack_now(mon) else 0, atk[1] if atk else 0)
+        survives = 1 if (mon.get("hp") or 0) > board.opp_threat(mon) else 0
+        return (survives if board.power_now(mon) >= 60 else 0, board.power_now(mon), energies, atk[1] if atk else 0)
     if board.select.get("context") == CTX_SWITCH:
         # Boss's Orders：拉上來是為了打倒拿獎賞卡 →「打得倒的」先，其中獎賞卡多的優先，再來 HP 低的。
         # 一定要先看打不打得倒：出 Boss 的理由就是「有打得倒的目標」，選目標時要用同一個條件
