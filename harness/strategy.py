@@ -393,7 +393,15 @@ class Board:
         opp_hp = (opp or {}).get("hp") or 0
         for mon in self.me.get("bench") or []:
             p = self.power_now(mon)
-            if p >= 60 and p >= active_power + 50:
+            card = card_info(mon.get("id"))
+            active_card = card_info((self.my_active or {}).get("id"))
+            # 只在戰鬥場是非 ex 配角時才擋：對上 Crustle 時 ex 打不動，Drakloak 本來就該上前
+            engine = card.get("stage1") and EVOLVES_INTO.get(card.get("name")) \
+                and not (active_card.get("ex") or active_card.get("megaEx"))
+            # 還能再進化的中間型（Drakloak＝找牌引擎）不為了「打得比較痛」推上前，只在打得倒時才換（下面那條）
+            # （Codex 敗局分析 cfd39c6f T3：撤退 Munkidori 讓 90 HP 的 Drakloak 打 70，下回合被打倒；
+            #  高手對照：改變的 11 點裡高手都沒撤退，0／2／9）
+            if p >= 60 and p >= active_power + 50 and not engine:
                 return True
             # 戰鬥場打不倒、備戰區這隻打得倒 → 換（撤退不會結束回合）
             # （Codex 敗局分析 cd088efe T13：Neutralization Zone 下 Dragapult 打 0，備戰區 Drakloak 70 剛好打倒 Alakazam）
@@ -702,7 +710,9 @@ def score_play_card(board, option):
             # 第二隻 Budew（30 HP）＝送對手一張獎賞卡（Codex 對局分析 0903e2e6：Mega Starmie 的備戰 50 點
             # 同回合打倒兩隻 Budew）
             return -1
-        if len(board.opp.get("prize") or []) <= 1 and len(names) >= THIN_BENCH:
+        meowth_search = name == "Meowth ex" and not board.current.get("supporterPlayed") and not any(
+            card_info(card_id_of(c)).get("cardType") == CARD_SUPPORTER for c in board.me.get("hand") or [])
+        if len(board.opp.get("prize") or []) <= 1 and len(names) >= THIN_BENCH and not meowth_search:
             # 對手只剩 1 張獎賞卡：新放的基礎寶可夢只是給對手的最後一個目標（0903e2e6 T10：新 Dreepy 被收掉最後一獎）
             return -1
         if prize_value(board.hand_card_id(option.get("index", 0))) >= 2 and not EVOLVES_INTO.get(name):
@@ -1148,6 +1158,10 @@ def discard_penalty(board, picked_ids):
     """丟牌組合的額外代價：把手上同名寶可夢「全部」丟光（Codex 敗局分析 ca4848f4：兩張 Dragapult ex
     逐張看都便宜，但不能兩張都丟，不然進化線斷掉）。"""
     penalty = 0
+    draw_in_hand = sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS)
+    draw_picked = sum(1 for c in picked_ids if card_info(c).get("name") in DRAW_SUPPORTERS)
+    if draw_in_hand and draw_picked >= draw_in_hand and not board.current.get("supporterPlayed"):
+        penalty += ALL_COPIES_PENALTY   # 丟光所有抽牌支援者（Codex 敗局分析 12972564：兩張 Lillie's 一起丟）
     for name in {card_info(c).get("name") for c in picked_ids}:
         copies = hand_count(board, name)
         if copies >= 2 and card_info(next(c for c in picked_ids if card_info(c).get("name") == name)).get(
