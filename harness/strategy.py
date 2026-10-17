@@ -64,6 +64,8 @@ SWITCH_CARDS = {"Switch", "Scramble Switch"}
 # 訓練家卡按用途分（2026-10-17 第 1 場實戰輸在「備戰區沒鋪起來」：手上的 Crushing Hammer 跟搜寶可夢的卡同分，先被打出去）
 SEARCH_POKEMON_CARDS = {"Buddy-Buddy Poffin", "Ultra Ball", "Poké Pad", "Nest Ball", "Dawn", "Hilda"}
 DISRUPTION_CARDS = {"Crushing Hammer", "Enhanced Hammer", "Unfair Stamp", "Judge", "Xerosic’s Machinations"}
+# 不受 ex 寶可夢招式傷害的防守者（2026-10-17：Dragapult ex 打 Crustle 11 次全部 0 傷害；不是 ex 的 Drakloak 打出 70）
+EX_IMMUNE_DEFENDERS = {"Crustle"}
 ENERGY_FETCH_CARDS = {"Crispin"}        # 從牌庫拿基本能量
 RECOVERY_CARDS = {"Night Stretcher"}    # 從棄牌堆撿回寶可夢或基本能量
 THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
@@ -154,6 +156,17 @@ def best_attack(card_id):
         if best is None or entry[1] > best[1]:
             best = entry
     return best
+
+
+def bench_spread(attack_id):
+    """招式說明裡「放傷害指示物到對手備戰區」的額外價值（例：Phantom Dive 6 個＝60）。"""
+    text = (attack_info(attack_id).get("text") or "").lower()
+    if "damage counters on your opponent" in text and "bench" in text:
+        for word, n in (("6 damage counters", 6), ("5 damage counters", 5), ("4 damage counters", 4),
+                        ("3 damage counters", 3), ("2 damage counters", 2)):
+            if word in text:
+                return n * DAMAGE_COUNTER
+    return 0
 
 
 def plan_cost(card_id, depth=2):
@@ -298,8 +311,11 @@ class Board:
         dmg = attack_info(attack_id).get("damage") or 0
         if not (attacker and defender) or dmg <= 0:
             return dmg
-        my_type = card_info(attacker.get("id")).get("energyType")
+        my_card = card_info(attacker.get("id"))
         target = card_info(defender.get("id"))
+        if target.get("name") in EX_IMMUNE_DEFENDERS and (my_card.get("ex") or my_card.get("megaEx")):
+            return 0  # 特性：不受對手 ex 寶可夢招式的傷害（卡牌目錄沒有特性資料，只能寫死）
+        my_type = my_card.get("energyType")
         if target.get("weakness") is not None and target.get("weakness") == my_type:
             dmg *= 2
         if target.get("resistance") is not None and target.get("resistance") == my_type:
@@ -307,14 +323,16 @@ class Board:
         return max(dmg, 0)
 
     def power_now(self, pokemon):
-        """這隻寶可夢「現在就付得起」的招式裡，最高的基礎傷害（付不起任何一招＝0）。"""
+        """這隻寶可夢「現在就付得起」的招式，打對手戰鬥場的最高估計傷害（付不起任何一招＝0）。
+        有算 Crustle 這類 ex 打不動的對手，所以會讓「Dragapult ex 打 0、Drakloak 打 70」時換人。"""
         if not pokemon:
             return 0
         best = 0
         for attack_id in card_info(pokemon.get("id")).get("attacks") or []:
             atk = attack_info(attack_id)
             if not missing_energy(pokemon.get("energies"), atk.get("energies") or []):
-                best = max(best, atk.get("damage") or 0)
+                best = max(best, self.damage_against(attack_id, pokemon, self.opp_active) if self.opp_active
+                           else (atk.get("damage") or 0))
         return best
 
     def better_attacker_on_bench(self):
@@ -377,7 +395,9 @@ def score_main_option(board, option):
         opp = board.opp_active
         if opp and damage >= (opp.get("hp") or 0) > 0:
             return SCORE["attack_ko"] + prize_value(opp.get("id"))  # 打得倒：拿獎賞卡，優先
-        return SCORE["attack"] + damage / 1000                   # 打不倒：佈局之後再打，同分挑傷害高的
+        # 打不倒：佈局之後再打，同分挑「總價值」高的——Phantom Dive 這類招式另外有 60 點放到備戰區
+        # （打 Crustle 時本體是 0，但備戰區的 6 個指示物照樣有效，所以要選它而不是 Jet Headbutt）
+        return SCORE["attack"] + (damage + bench_spread(option.get("attackId"))) / 1000
 
     if kind == OPT_RETREAT:
         # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
@@ -420,8 +440,10 @@ def score_play_card(board, option):
         return SCORE["retreat_ready"] if board.better_attacker_on_bench() else -1
     if name in GUST_CARDS:
         # 對手備戰區有一隻「拉上來就打得倒」的 → 拉（獎賞卡越多越優先）
-        damage = board.best_damage_now()
-        targets = [m for m in board.opp.get("bench") or [] if m and 0 < (m.get("hp") or 0) <= damage]
+        # 逐隻用 damage_against 算：戰鬥場是 Crustle 這類打不動的牆時，也能把後面打得動的拉上來
+        attacks = [o.get("attackId") for o in board.options if isinstance(o, dict) and o.get("type") == OPT_ATTACK]
+        targets = [m for m in board.opp.get("bench") or [] if m and 0 < (m.get("hp") or 0)
+                   <= max([board.damage_against(a, board.my_active, m) for a in attacks] or [0])]
         if targets and board.can_attack_now(board.my_active):
             return SCORE["attack_ko"] + 5 + max(prize_value(m.get("id")) for m in targets)
         return -1

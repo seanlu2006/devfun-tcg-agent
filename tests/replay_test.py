@@ -81,10 +81,28 @@ def synthetic_cases(strategy):
          main_turn([], [{"type": 13, "attackId": weak}, {"type": 13, "attackId": strong}, {"type": 14}]), "[1]"),
         ("legalActions 混了 __forfeit__：照樣選最好的，不投降",
          main_turn([], [{"type": 14}, {"type": 13, "attackId": strong}], ["__forfeit__", "[0]", "[1]"]), "[1]"),
+        ("對手是 Crustle（ex 打不動）、備戰區有充好能量的 Drakloak：撤退換人", crustle_case(strategy, drakloak_ready=True), "[0]"),
+        ("對手是 Crustle、沒人能換：選 Phantom Dive（備戰區指示物照樣有效），不選 Jet Headbutt",
+         crustle_case(strategy, drakloak_ready=False), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
     ]
+
+
+def crustle_case(strategy, drakloak_ready):
+    """戰鬥場 Dragapult ex（火＋超）對上 Crustle；選項：[0] 撤退、[1] Phantom Dive、[2] Jet Headbutt、[3] 結束。"""
+    ids = {v["name"]: k for k, v in strategy.CARDS.items() if v["name"] in ("Dragapult ex", "Drakloak", "Crustle")}
+    atk = {strategy.attack_info(a)["name"]: a for a in strategy.card_info(ids["Dragapult ex"])["attacks"]}
+    bench = [{"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": [2, 5] if drakloak_ready else []}]
+    players = [{"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}],
+                "bench": bench, "benchMax": 5, "hand": []},
+               {"active": [{"id": ids["Crustle"], "hp": 150, "maxHp": 150, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 12}, {"type": 13, "attackId": atk["Phantom Dive"]}, {"type": 13, "attackId": atk["Jet Headbutt"]},
+               {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": [f"[{i}]" for i in range(len(options))]}
 
 
 def iter_decision_points():
