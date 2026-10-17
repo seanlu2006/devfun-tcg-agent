@@ -44,6 +44,9 @@ class MockArena:
 
     def join(self, body):
         self.joins += 1
+        if self.joins == 2 and not getattr(self, "busy_sent", False):
+            self.busy_sent = True
+            return 409, {"error": "arena_transaction_busy", "message": "Database transaction is busy; retry"}
         payload = body.get("joinPayload")
         # 跟真伺服器一樣（2026-10-17 實測）：每次加入都要帶 60 張牌組；牌組鎖定後帶不同的 → 409
         if not isinstance(payload, list) or len(payload) != 60:

@@ -29,6 +29,7 @@ from validate_deck import expand, validate  # noqa: E402
 RUN_DIR = ROOT / "data" / "runs"
 DEADLINE_MARGIN_MS = 1500   # 離截止不到 1.5 秒就不想了，直接送保底動作
 STOP_ERRORS = {"engine_match_allowance_exhausted", "competition_closed"}
+TRANSIENT_ERRORS = {"arena_transaction_busy", "engine_submission_version_busy"}
 
 
 def load_strategy():
@@ -73,8 +74,14 @@ class Runner:
             if errors:
                 sys.exit("牌組不合法：" + "；".join(errors))
             body["joinPayload"] = expand(deck)
-        status, data = self.call("POST", "/tcg/join", body)
-        code = data.get("error") or data.get("code")
+        for attempt in range(6):
+            status, data = self.call("POST", "/tcg/join", body)
+            code = data.get("error") or data.get("code")
+            # 暫時性錯誤（2026-10-17 實測：409 arena_transaction_busy「資料庫忙碌，稍後重試」）→ 等一下再試
+            if code in TRANSIENT_ERRORS or status >= 500:
+                time.sleep(2 * (attempt + 1))
+                continue
+            break
 
         if status == 409 and code == "payload_locked":
             self.state["deck_locked"] = True       # 之前已經鎖定了：不帶牌組再加入一次
