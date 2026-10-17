@@ -103,6 +103,7 @@ def synthetic_cases(strategy):
         ("對手 9 張手牌、Unfair Stamp 合法：攻擊前先出", stamp_case(strategy), "[0]"),
         ("帶 Rock Fighting Energy 的 Solrock 放指示物無效：改放另一隻", rock_energy_case(strategy), "[1]"),
         ("場上已有 Budew 和另外兩隻：不再鋪第二隻 Budew（30 HP 送分）", second_budew_case(strategy), "[1]"),
+        ("Ultra Ball 丟 2 張：留住唯一的 Lillie's，丟 Hammer＋惡能量", keep_lillie_case(strategy), "[0,2]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -333,6 +334,20 @@ def second_budew_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def keep_lillie_case(strategy):
+    ids = _ids(strategy)
+    hand = [{"id": ids["Crushing Hammer"]}, {"id": ids["Lillie's Determination"]}, {"id": ids["Basic {D} Energy"]}]
+    players = [{"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}],
+                "bench": [{"id": ids["Budew"], "hp": 30, "maxHp": 30, "energies": []},
+                          {"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}],
+                "benchMax": 5, "hand": hand, "deckCount": 40},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"area": 2, "type": 3, "index": i} for i in range(3)]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 2},
+           "select": {"type": 1, "context": 8, "minCount": 2, "maxCount": 2, "option": options}}
+    return {"observation": obs, "legalActions": ["[0,1]", "[0,2]", "[1,2]"]}
 
 
 def iter_decision_points():

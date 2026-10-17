@@ -72,6 +72,8 @@ EX_IMMUNE_DEFENDERS = {"Crustle"}
 ENERGY_FETCH_CARDS = {"Crispin"}        # 從牌庫拿基本能量
 DISCARD_COST_CARDS = {"Ultra Ball": 2}   # 出牌時要先丟幾張手牌當代價
 RECOVERY_CARDS = {"Night Stretcher"}    # 從棄牌堆撿回寶可夢或基本能量
+EX_BLOCKING_STADIUMS = {"Neutralization Zone"}   # 競技場：ex 的招式對非 ex 沒有傷害（雙方都適用）
+DRAW_SUPPORTERS = {"Lillie's Determination", "Lillie’s Determination", "Judge"}
 TURN_ENDING_ABILITIES = {"Lumiose City"}   # 用了就結束回合的特性（卡牌目錄沒有特性文字，只能寫死）
 ABILITY_ENERGY = {"Munkidori": 7}          # 特性要身上有這種能量才能用（Munkidori 的 Adrena-Brain 要惡能量）
 THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
@@ -339,7 +341,12 @@ class Board:
             return dmg
         my_card = card_info(attacker.get("id"))
         target = card_info(defender.get("id"))
-        if target.get("name") in EX_IMMUNE_DEFENDERS and (my_card.get("ex") or my_card.get("megaEx")):
+        attacker_ex = my_card.get("ex") or my_card.get("megaEx")
+        stadium = (self.current.get("stadium") or [None])[0]
+        if attacker_ex and stadium and card_info(card_id_of(stadium)).get("name") in EX_BLOCKING_STADIUMS \
+                and not (target.get("ex") or target.get("megaEx")):
+            return 0  # Neutralization Zone：ex 的招式打不痛非 ex（Codex 敗局分析 cd088efe：Phantom Dive 正面打 Alakazam 被擋）
+        if target.get("name") in EX_IMMUNE_DEFENDERS and attacker_ex:
             return 0  # 特性：不受對手 ex 寶可夢招式的傷害（卡牌目錄沒有特性資料，只能寫死）
         my_type = my_card.get("energyType")
         if target.get("weakness") is not None and target.get("weakness") == my_type:
@@ -382,11 +389,25 @@ class Board:
         2026-10-17 實戰：舊規則只看「戰鬥場打不打得出招式」，Budew 的 10 點招式不用能量，
         於是整場卡在戰鬥場，備戰區的 Dragapult ex 從沒上來；也發生過把 Meowth ex 換成只打 10 的 Dreepy。"""
         active_power = self.power_now(self.my_active)
+        opp = self.opp_active
+        opp_hp = (opp or {}).get("hp") or 0
         for mon in self.me.get("bench") or []:
             p = self.power_now(mon)
             if p >= 60 and p >= active_power + 50:
                 return True
+            # 戰鬥場打不倒、備戰區這隻打得倒 → 換（撤退不會結束回合）
+            # （Codex 敗局分析 cd088efe T13：Neutralization Zone 下 Dragapult 打 0，備戰區 Drakloak 70 剛好打倒 Alakazam）
+            if opp_hp and self.damage_vs_opp(mon) >= opp_hp > self.damage_vs_opp(self.my_active):
+                return True
         return False
+
+    def damage_vs_opp(self, pokemon):
+        """這隻現在付得起的招式，打對手戰鬥場的最高正面傷害（不含備戰區指示物）。"""
+        best = 0
+        for attack_id in card_info((pokemon or {}).get("id")).get("attacks") or []:
+            if not missing_energy(pokemon.get("energies"), attack_info(attack_id).get("energies") or []):
+                best = max(best, self.damage_against(attack_id, pokemon, self.opp_active))
+        return best
 
     def opp_threat(self, defender):
         """對手戰鬥場「現在付得起」的招式打 defender 的最高估計傷害（變動傷害的招式算基礎值，會低估）。"""
@@ -402,8 +423,34 @@ class Board:
                 if bonus and dmg > 0:
                     total = len(attacker.get("energies") or []) + len((self.my_active or {}).get("energies") or [])
                     dmg += int(bonus.group(1)) * total
+                dmg = max(dmg, self.hand_counter_damage(attack_id))
                 best = max(best, dmg)
         return best
+
+    def hand_counter_damage(self, attack_id, hand_count=None):
+        """「對手手牌每 1 張，放 N 個傷害指示物到戰鬥場」（Alakazam 的 Powerful Hand）。"""
+        m = re.search(r"place (\d+) damage counters? on your opponent.s active pok.mon for each card in your hand",
+                      (attack_info(attack_id).get("text") or "").lower())
+        if not m:
+            return 0
+        n = self.opp.get("handCount") if hand_count is None else hand_count
+        return int(m.group(1)) * DAMAGE_COUNTER * (n or 0)
+
+    def judge_saves_active(self):
+        """對手靠手牌張數打傷害（Powerful Hand），現在打得倒我們的戰鬥場、而被打倒就輸；Judge 讓他只剩 4 張就打不倒。
+        （Codex 敗局分析 cd088efe T19：對手 17 張手牌＝340，滿血 Dragapult 320；Judge 合法卻選了打不完的 Phantom Dive）"""
+        active, attacker = self.my_active, self.opp_active
+        if not active or not attacker:
+            return False
+        hp = active.get("hp") or 0
+        if len(self.opp.get("prize") or []) > prize_value(active.get("id")):
+            return False
+        for attack_id in card_info(attacker.get("id")).get("attacks") or []:
+            if missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
+                continue
+            if self.hand_counter_damage(attack_id) >= hp > self.hand_counter_damage(attack_id, 4):
+                return True
+        return False
 
     def losing_swap_available(self):
         """戰鬥場被打倒就輸（對手剩下的獎賞卡 ≤ 它值的張數）、這回合又打不倒對手 →
@@ -686,6 +733,8 @@ def score_play_card(board, option):
         if any(m and m.get("energies") for m in (board.opp.get("active") or []) + (board.opp.get("bench") or [])):
             return SCORE["attack_ko"] + 8
         return -1
+    if name == "Judge" and board.judge_saves_active():
+        return SCORE["attack_ko"] + 9
     if name == "Judge":
         # 雙方洗手牌、各抽 4：自己手上能用的牌少時，它就是抽牌支援者（Codex 敗局分析 f4a8c816、8d2c126f：
         # 手上只剩用不到的牌，Judge 被當干擾卡固定 30 分，一直沒出）
@@ -957,7 +1006,9 @@ def pokemon_value(board, mon, side):
         # 而不是撤退費 0 的 Budew；高手對照 3 比 2）。上場後還會被打倒的，排在挨得住的後面
         atk = best_attack(mon.get("id"))
         survives = 1 if (mon.get("hp") or 0) > board.opp_threat(mon) else 0
-        return (survives if board.power_now(mon) >= 60 else 0, board.power_now(mon), energies, atk[1] if atk else 0)
+        # 試過「戰力相同時 Drakloak 排在配角後面」（Codex 建議）：高手一致率（挑一隻上戰鬥場）62% → 55～58%，不採用
+        return (survives if board.power_now(mon) >= 60 else 0, board.power_now(mon), energies,
+                atk[1] if atk else 0)
     if board.select.get("context") == CTX_SWITCH:
         # Boss's Orders：拉上來是為了打倒拿獎賞卡 →「打得倒的」先，其中獎賞卡多的優先，再來 HP 低的。
         # 一定要先看打不打得倒：出 Boss 的理由就是「有打得倒的目標」，選目標時要用同一個條件
@@ -1078,6 +1129,9 @@ def keep_value(board, card_id):
     if value is None:
         return 50
     card = card_info(card_id)
+    if card.get("name") in DRAW_SUPPORTERS and not board.current.get("supporterPlayed") \
+            and sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS) == 1:
+        return 75   # 唯一的抽牌支援者別丟（Codex 敗局分析 6a4693e4：Ultra Ball 丟了唯一的 Lillie's，之後兩回合停機）
     if card.get("cardType") == CARD_BASIC_ENERGY:
         value = max(value, 45)
     elif card.get("cardType") == CARD_ITEM and hand_count(board, card.get("name")) >= 2:
