@@ -67,6 +67,7 @@ DISRUPTION_CARDS = {"Crushing Hammer", "Enhanced Hammer", "Unfair Stamp", "Judge
 # 不受 ex 寶可夢招式傷害的防守者（2026-10-17：Dragapult ex 打 Crustle 11 次全部 0 傷害；不是 ex 的 Drakloak 打出 70）
 EX_IMMUNE_DEFENDERS = {"Crustle"}
 ENERGY_FETCH_CARDS = {"Crispin"}        # 從牌庫拿基本能量
+DISCARD_COST_CARDS = {"Ultra Ball": 2}   # 出牌時要先丟幾張手牌當代價
 RECOVERY_CARDS = {"Night Stretcher"}    # 從棄牌堆撿回寶可夢或基本能量
 THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
 LOW_DECK = 10   # 牌庫剩這麼少，就停止用找牌特性
@@ -501,6 +502,9 @@ def score_play_card(board, option):
                 return SCORE["draw"]  # Meowth ex 上場可以搜支援者：手上沒支援者時才值得
             return SCORE["item"] - 5
         return SCORE["bench_basic"]
+    if name in DISCARD_COST_CARDS and not can_afford_discard(board, option.get("index", 0), DISCARD_COST_CARDS[name]):
+        # 2026-10-18 第 6 批：手上只剩 Poké Pad 和 Drakloak 還出 Ultra Ball，丟掉 Drakloak 去搜另一張 Drakloak
+        return -1
     if name in SEARCH_POKEMON_CARDS:
         if board.bench_space() <= 0:
             return SCORE["item"]
@@ -646,15 +650,19 @@ def pick_pokemon(board, legal):
     return best
 
 
-def want_value(board, card_id):
-    """搜牌／拿牌時，這張卡有多想要（越大越想要）。看不到是什麼卡回傳 None。"""
+def want_value(board, card_id, in_hand=False):
+    """搜牌／拿牌時，這張卡有多想要（越大越想要）。看不到是什麼卡回傳 None。
+    in_hand＝這張卡本來就在手上（丟牌時用）：數「手上已經有幾張」時要扣掉它自己。"""
     card = card_info(card_id)
     if not card:
         return None
     in_play = board.names_in_play()
     if card.get("cardType") == CARD_POKEMON:
         if card.get("evolvesFrom") in in_play:
-            return 90                                          # 能馬上進化的
+            # 能馬上進化的；但手上的同名卡已經夠場上每一隻進化了，就不用再拿
+            # （2026-10-18 第 6 批：場上只有 1 隻 Dreepy、手上已有 Drakloak，Ultra Ball 還是搜 Drakloak）
+            targets = sum(1 for m in board.my_pokemon() if card_info(m.get("id")).get("name") == card.get("evolvesFrom"))
+            return 40 if hand_count(board, card.get("name")) - (1 if in_hand else 0) >= targets else 90
         if card.get("basic") and EVOLVES_INTO.get(card.get("name")):
             return 70 if board.bench_space() > 0 else 20       # 進化線的起點
         return 50 if board.bench_space() > 0 else 15
@@ -706,10 +714,35 @@ def recoverable_value(board):
     return False
 
 
+def hand_count(board, name):
+    return sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") == name)
+
+
 def keep_value(board, card_id):
-    """丟牌時，這張卡有多想留（越小越先丟）。"""
-    value = want_value(board, card_id)
-    return 50 if value is None else value
+    """丟牌時，這張卡有多想留（越小越先丟）。
+    2026-10-18 第 6 批：第 1 回合場上只有 Fezandipiti ex，Ultra Ball 丟了 Boss's Orders 和唯一的火能量，
+    留下兩張 Poké Pad。所以：基本能量至少和搜尋卡一樣值得留（這副牌只有 10 張能量）；
+    同一張物品卡手上有兩張以上時，重複的先丟。"""
+    value = want_value(board, card_id, in_hand=True)
+    if value is None:
+        return 50
+    card = card_info(card_id)
+    if card.get("cardType") == CARD_BASIC_ENERGY:
+        value = max(value, 45)
+    elif card.get("cardType") == CARD_ITEM and hand_count(board, card.get("name")) >= 2:
+        value -= 15
+    return value
+
+
+def can_afford_discard(board, hand_index, n):
+    """出這張卡要丟 n 張手牌：手上（扣掉它自己）夠 n 張，而且最便宜的 n 張都不是「想要的」（keep_value < 60）。"""
+    others = [card_id_of(c) for i, c in enumerate(board.me.get("hand") or []) if i != hand_index]
+    if board.me.get("hand") is None:
+        return True   # 看不到手牌（公開紀錄）：不擋
+    if len(others) < n:
+        return False
+    cheapest = sorted(keep_value(board, cid) for cid in others)[:n]
+    return all(v < 60 for v in cheapest)
 
 
 def pick_cards(board, legal, value_fn, prefer):

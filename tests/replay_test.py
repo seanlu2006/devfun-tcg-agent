@@ -88,6 +88,7 @@ def synthetic_cases(strategy):
         ("兩招都打得倒 Dreepy：選 Phantom Dive（多 6 個指示物），不選 Jet Headbutt", mirror_case(strategy, boss=False), "[1]"),
         ("戰鬥場的 Fezandipiti ex 本來就打得倒（2 張）：不出 Boss 拉 1 張的 Dreepy，直接 Phantom Dive",
          mirror_case(strategy, boss=True), "[2]"),
+        ("手上只剩 Poké Pad 和接得上的 Drakloak：不出 Ultra Ball（會把 Drakloak 丟掉）", ultra_ball_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -131,6 +132,23 @@ def mirror_case(strategy, boss):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": [f"[{i}]" for i in range(len(options))]}
+
+
+def ultra_ball_case(strategy):
+    """備戰區 1 隻 Dreepy、手上 Ultra Ball＋Poké Pad＋Drakloak；選項 [0] 出 Ultra Ball、[1] 結束。"""
+    ids = {}
+    for k, v in strategy.CARDS.items():
+        ids.setdefault(v["name"], k)
+    hand = [{"id": ids["Ultra Ball"]}, {"id": ids["Poké Pad"]}, {"id": ids["Drakloak"]}]
+    players = [{"active": [{"id": ids["Fezandipiti ex"], "hp": 210, "maxHp": 210, "energies": []}],
+                "bench": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []},
+                          {"id": ids["Munkidori"], "hp": 110, "maxHp": 110, "energies": []}],
+                "benchMax": 5, "hand": hand, "deckCount": 40},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 7, "index": 0}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
 
 
 def iter_decision_points():
