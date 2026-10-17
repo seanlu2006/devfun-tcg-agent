@@ -413,6 +413,14 @@ def score_main_option(board, option):
                 isinstance(o, dict) and o.get("type") == OPT_ABILITY and o.get("area") == option.get("inPlayArea")
                 and o.get("index") == option.get("inPlayIndex") for o in board.options):
             return SCORE["ability"] - 1
+        # 場上已經有 2 隻 Dragapult ex，就別把最後一隻 Drakloak 也進化掉：之後每回合還要靠它找牌
+        # （Codex 對局分析 f6698511 T7：進化成第三隻 Dragapult 後，T9、T11 都沒有 Drakloak 可以用）
+        target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex"))
+        target_name = card_info((target or {}).get("id")).get("name")
+        evolves_to = card_info(board.hand_card_id(option.get("index", 0))).get("name")
+        names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
+        if target_name == "Drakloak" and names.count("Drakloak") == 1 and names.count(evolves_to) >= 2:
+            return -1   # 等其中一隻 Dragapult ex 被打倒（剩不到 2 隻）才進化，這條就不擋了
         return SCORE["evolve"]
 
     if kind == OPT_ATTACH_ENERGY:
@@ -461,6 +469,11 @@ def score_attach(board, option):
     target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex", 0))
     if not target:
         return SCORE["attach_extra"]
+    if option.get("inPlayArea") == AREA_ACTIVE and needs_energy_to_retreat(board) and board.better_attacker_on_bench():
+        # 備戰區已經有備好的主攻手，戰鬥場那隻（例：Meowth ex）卻付不起撤退費 → 這張能量先拿去付撤退費
+        # （Codex 對局分析 f6698511 T7：超能量貼給第二隻 Dragapult，Meowth 換不下來，等它被打倒才上場）
+        # 排在進化（90）、特性（88）之後：高手多半先進化、先用 Drakloak 看牌，再貼（高手對照 2026-10-18）
+        return SCORE["ability"] - 2
     missing = missing_energy(target.get("energies"), plan_cost(target.get("id")))
     if not missing:
         return SCORE["attach_extra"]
@@ -476,6 +489,15 @@ def score_attach(board, option):
     if COLORLESS in missing or energy_type is None:
         return SCORE["attach_colorless"] + bonus
     return SCORE["attach_extra"]  # 顏色不對：除非沒別的事做，不然不貼
+
+
+def needs_energy_to_retreat(board):
+    """戰鬥場那隻差 1 個能量就付得起撤退費（而且這回合還沒撤退過）。"""
+    active = board.my_active
+    if not active or board.current.get("retreated"):
+        return False
+    cost = card_info(active.get("id")).get("retreatCost") or 0
+    return len(active.get("energies") or []) + 1 == cost
 
 
 def score_play_card(board, option):
@@ -524,7 +546,13 @@ def score_play_card(board, option):
     if name in SEARCH_POKEMON_CARDS:
         if board.bench_space() <= 0:
             return SCORE["item"]
-        return SCORE["evolve"] - 2 if thin else SCORE["draw"] + 5
+        if thin:
+            return SCORE["evolve"] - 2
+        if len(board.my_pokemon()) <= THIN_BENCH:
+            # 場上剛好 3 隻：在打得倒的攻擊（60＋獎賞卡）之前先鋪場，攻擊會結束回合
+            # （Codex 對局分析 412ef0e7 T9：Jet Headbutt 打得倒就直接打，沒先出 Poffin，主力倒下後只剩 Dreepy）
+            return SCORE["attack_ko"] + 5
+        return SCORE["draw"] + 5
     if name == "Crushing Hammer":
         # 擲硬幣拆對手 1 個能量：不花任何代價，攻擊會結束回合，所以對手場上有能量就在攻擊前先出
         # （Codex 敗局分析：20 場、41 次打不倒對手卻沒先出鎚子，對手留著完整能量反擊）
@@ -541,7 +569,9 @@ def score_play_card(board, option):
         # Night Stretcher：棄牌堆有主力要的能量或主力線寶可夢才用，不然留著
         return SCORE["draw"] + 5 if recoverable_value(board) else SCORE["item"] - 5
     if card_type == CARD_SUPPORTER:
-        return SCORE["draw"]
+        # 主力缺顏色、手上又補不上：抽牌（Lillie's 等）優先於 Dawn 這類搜寶可夢的（55）
+        # （Codex 對局分析 f6698511 T13：先用 Dawn，支援者額度用掉，看到的 Crispin 用不了）
+        return SCORE["draw"] + 6 if energy_starved(board) else SCORE["draw"]
     if card_type == CARD_ITEM:
         return SCORE["draw"] if board.bench_space() > 0 else SCORE["item"]
     if card_type == CARD_TOOL:
@@ -583,6 +613,12 @@ def choose_other(board, legal):
         crispin = pick_crispin(board, legal, ctx)
         if crispin is not None:
             return crispin
+    if (sel_type, ctx) == (1, CTX_OPENING_ACTIVE):
+        return pick_opening_active(board, legal) or (legal[0] if legal else None)
+    if ctx == CTX_DISCARD_ENERGY and card_info((board.select.get("effect") or {}).get("id")).get("name") == "Crushing Hammer":
+        hammer = pick_hammer_target(board, legal)
+        if hammer is not None:
+            return hammer
     if ctx == CTX_DISCARD_HAND:
         return pick_cards(board, legal, keep_value, prefer="low")
     if ctx in (CTX_TO_HAND, CTX_DECK_TO_BENCH):
@@ -594,6 +630,43 @@ def choose_other(board, legal):
 
 CTX_CRISPIN_ATTACH_CARD = 22    # (1, 22) Crispin 第二張（直接貼上場的那張，顏色要不同）
 CTX_ATTACH_TARGET = 21          # (1, 21) 貼 contextCard 這張能量到哪一隻
+
+
+CTX_OPENING_ACTIVE = 1     # (1, 1) 開局從手牌選戰鬥寶可夢
+CTX_DISCARD_ENERGY = 30    # (4, 30) 選要丟的能量（Crushing Hammer 拆對手的也是這題）
+
+
+def pick_opening_active(board, legal):
+    """開局的戰鬥寶可夢：Budew（撤退費 0、不用能量就能打）＞ 其他非 ex 的配角 ＞ Dreepy（主力線留在備戰區養）
+    ＞ 會送 2 張獎賞卡的 ex（Codex 對局分析 27c62713：以前固定選第一個，常讓 Meowth ex 卡在戰鬥場）"""
+    def rank(action):
+        option = single_pick(board, action)
+        card = card_info(board.option_card_id(option)) if option else {}
+        if not card:
+            return -1
+        if card.get("ex") or card.get("megaEx"):
+            return 0
+        if card.get("name") == "Budew":
+            return 3
+        return 1 if EVOLVES_INTO.get(card.get("name")) else 2
+    choices = [a for a in legal if single_pick(board, a)]
+    return max(choices, key=rank) if choices else None
+
+
+def pick_hammer_target(board, legal):
+    """Crushing Hammer 拆哪個能量：對手戰鬥場的優先（它下回合就要攻擊），再來獎賞卡多的、身上能量少的
+    （拆掉唯一一個最能延後它開打）。Codex 對局分析 f6698511 T7：以前固定拆第一個，拆到備戰區 Reshiram。"""
+    def rank(action):
+        option = single_pick(board, action)
+        if not option or board.option_side(option) != "opp":
+            return None
+        mon = board.in_play(option.get("area"), option.get("index"), "opp") or {}
+        return (1 if option.get("area") == AREA_ACTIVE else 0, prize_value(mon.get("id")),
+                -len(mon.get("energies") or []))
+    # 同分（例：同一隻身上的不同能量）照原本順序拿第一個——高手 17 次裡有 14 次是這樣
+    scored = [(rank(a), -i, a) for i, a in enumerate(legal)]
+    scored = [x for x in scored if x[0] is not None]
+    return max(scored)[2] if scored else None
 
 
 def energy_urgency(board, energy_type, mon):

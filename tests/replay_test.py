@@ -94,6 +94,8 @@ def synthetic_cases(strategy):
         ("備戰區沒人：不用 Tuck Tail（會變成場上沒寶可夢判輸）", codex_case(strategy, "tuck"), "[1]"),
         ("Ultra Ball 丟 2 張、手上兩張 Dragapult ex（場上還沒 Drakloak）：不能兩張都丟，也不丟光支援者",
          discard_case(strategy), "[0,2]"),
+        ("開局手上 Meowth ex、Budew、Dreepy：Budew 當戰鬥寶可夢", opening_case(strategy), "[1]"),
+        ("場上已有 2 隻 Dragapult ex：不把最後一隻 Drakloak 也進化掉", last_drakloak_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -199,6 +201,36 @@ def discard_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 2},
            "select": {"type": 1, "context": 8, "minCount": 2, "maxCount": 2, "option": options}}
     return {"observation": obs, "legalActions": legal}
+
+
+def _ids(strategy):
+    ids = {}
+    for k, v in strategy.CARDS.items():
+        ids.setdefault(v["name"].replace("’", "'"), k)
+    return ids
+
+
+def opening_case(strategy):
+    ids = _ids(strategy)
+    hand = [{"id": ids["Meowth ex"]}, {"id": ids["Budew"]}, {"id": ids["Dreepy"]}]
+    players = [{"active": [], "bench": [], "benchMax": 5, "hand": hand, "deckCount": 53},
+               {"active": [], "bench": [], "benchMax": 5}]
+    obs = {"current": {"yourIndex": 0, "players": players},
+           "select": {"type": 1, "context": 1, "option": [{"area": 2, "type": 3, "index": i} for i in range(3)]}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
+
+
+def last_drakloak_case(strategy):
+    """選項 [0] 把備戰區唯一的 Drakloak 進化成第三隻 Dragapult ex、[1] 結束回合。"""
+    ids = _ids(strategy)
+    pult = {"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}
+    players = [{"active": [dict(pult)], "bench": [dict(pult), {"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": []}],
+                "benchMax": 5, "hand": [{"id": ids["Dragapult ex"]}], "deckCount": 20},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 9, "area": 2, "index": 0, "inPlayArea": 5, "inPlayIndex": 1}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
 
 
 def iter_decision_points():
