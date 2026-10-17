@@ -549,11 +549,26 @@ def want_value(board, card_id):
             return 70 if board.bench_space() > 0 else 20       # 進化線的起點
         return 50 if board.bench_space() > 0 else 15
     if card.get("cardType") in (CARD_BASIC_ENERGY, CARD_SPECIAL_ENERGY):
-        needs = [e for m in board.my_pokemon() for e in missing_energy(m.get("energies"), plan_cost(m.get("id")))]
-        return 60 if card.get("energyType") in needs else 25
+        return 60 if card.get("energyType") in needed_colors(board) else 25
     if card.get("cardType") == CARD_SUPPORTER:
         return 40
+    if card.get("name") in SEARCH_POKEMON_CARDS:
+        return 45
+    if card.get("name") in DISRUPTION_CARDS:
+        return 20
     return 30
+
+
+def needed_colors(board):
+    """我們需要的能量顏色：場上寶可夢的計畫招式還缺的，加上手牌裡寶可夢（含進化型）的計畫招式要的。
+    （2026-10-17 實戰：場上只有 Fezandipiti 時，Ultra Ball 把火、超能量丟了——只看場上會漏掉手牌裡的 Dreepy 線）"""
+    needs = {e for m in board.my_pokemon() for e in missing_energy(m.get("energies"), plan_cost(m.get("id")))}
+    for card in board.me.get("hand") or []:
+        cid = card_id_of(card)
+        if card_info(cid).get("cardType") == CARD_POKEMON:
+            needs.update(plan_cost(cid))
+    needs.discard(COLORLESS)
+    return needs
 
 
 def keep_value(board, card_id):

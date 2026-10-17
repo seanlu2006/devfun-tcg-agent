@@ -61,7 +61,7 @@ v1 的做法（`score_main_option` 的 `OPT_ATTACK` 分支＋`Board.damage_again
 - 開局的是非題：前 15 名選「是」勝率 61%（30/49）、選「否」54%（15/28）→ 維持選「是」。
 
 ## 接下來的練習（Sean）
-- **練習 2：丟牌**（`keep_value`）——現在只有 22% 跟高手一樣。Ultra Ball 要丟 2 張時，該丟什麼？提示：第一次真的上場後，看 `data/runs/` 的紀錄，比賽時手牌看得到。
+- **練習 2：丟牌**（`keep_value`）——2026-10-17 實戰後先修了最嚴重的：不再丟掉主力招式要的火／超能量（`needed_colors` 會看手牌裡的寶可夢），干擾卡優先丟。還能再細調：重複的支援者、已經用不到的卡。實戰盤面在 `data/runs/*_obs.jsonl`（含手牌）。
 - **練習 3：Lillie's Determination／Judge 什麼時候出**——這兩張會洗掉手牌，手上好牌多的時候出反而虧。
 - **練習 4：Budew 第一回合**——還打不出 Phantom Dive 時，用 Itchy Pollen 鎖對手物品卡（Alakazam 靠 Rare Candy、Team Rocket 靠 Ultra Ball）。
-- **練習 5：搜牌**（`want_value`）——需要比賽時的 `select.deck` 才知道搜到的是哪張卡，第一次上場後再寫。
+- **練習 5：搜牌**（`want_value`）——實戰確認：搜牌時 `select.deck` 會列出整個牌庫，程式知道選項是哪張卡。目前規則：能馬上進化的 ＞ 進化線起點 ＞ 需要的能量。
