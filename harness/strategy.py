@@ -43,6 +43,7 @@ AREA_HAND = 2
 AREA_DISCARD = 3
 AREA_ACTIVE = 4
 AREA_BENCH = 5
+AREA_LOOKING = 12   # 正在看的牌（Drakloak 特性看牌庫上面 2 張），實際卡片在 current.looking
 
 CARD_POKEMON = 0
 CARD_ITEM = 1
@@ -279,6 +280,11 @@ class Board:
         if area == AREA_DISCARD:
             pile = (self.me if self.option_side(option) == "me" else self.opp).get("discard") or []
             return card_id_of(pile[index]) if index is not None and 0 <= index < len(pile) else None
+        if area == AREA_LOOKING:
+            # Codex 敗局分析（2026-10-18）：以前沒讀這區，Drakloak 看到的兩張都當成未知卡、固定拿第一張，
+            # 6 場有 7 次放過了「拿了就能湊齊 Phantom Dive」的能量
+            cards = self.current.get("looking") or []
+            return card_id_of(cards[index]) if isinstance(index, int) and 0 <= index < len(cards) else None
         if area == AREA_DECK:
             deck = self.select.get("deck")
             if isinstance(deck, list) and index is not None and 0 <= index < len(deck):
@@ -400,6 +406,13 @@ def score_main_option(board, option):
     kind = option.get("type")
 
     if kind == OPT_EVOLVE:
+        # 要進化的那隻現在還能用特性（Drakloak 看 2 張拿 1 張）→ 先用特性，進化後就沒了
+        # （Codex 敗局分析：24 場、37 次先進化成 Dragapult ex，白白少看兩張牌）
+        deck_count = board.me.get("deckCount")
+        if (deck_count is None or deck_count > LOW_DECK) and any(
+                isinstance(o, dict) and o.get("type") == OPT_ABILITY and o.get("area") == option.get("inPlayArea")
+                and o.get("index") == option.get("inPlayIndex") for o in board.options):
+            return SCORE["ability"] - 1
         return SCORE["evolve"]
 
     if kind == OPT_ATTACH_ENERGY:
@@ -416,6 +429,9 @@ def score_main_option(board, option):
         return SCORE["ability"]
 
     if kind == OPT_ATTACK:
+        text = (attack_info(option.get("attackId")).get("text") or "").lower()
+        if "this pokémon and all attached cards into your hand" in text and not (board.me.get("bench") or []):
+            return -1  # Meowth ex 的 Tuck Tail：備戰區沒人時用了＝場上沒寶可夢，直接判輸（Codex 敗局分析 2f177d48）
         damage = board.damage_against(option.get("attackId"), board.my_active, board.opp_active)
         spread = bench_spread(option.get("attackId"))
         opp = board.opp_active
@@ -509,6 +525,12 @@ def score_play_card(board, option):
         if board.bench_space() <= 0:
             return SCORE["item"]
         return SCORE["evolve"] - 2 if thin else SCORE["draw"] + 5
+    if name == "Crushing Hammer":
+        # 擲硬幣拆對手 1 個能量：不花任何代價，攻擊會結束回合，所以對手場上有能量就在攻擊前先出
+        # （Codex 敗局分析：20 場、41 次打不倒對手卻沒先出鎚子，對手留著完整能量反擊）
+        if any(m and m.get("energies") for m in (board.opp.get("active") or []) + (board.opp.get("bench") or [])):
+            return SCORE["attack_ko"] + 8
+        return -1
     if name in DISRUPTION_CARDS:
         return SCORE["item"]  # 干擾對手（拆能量、洗手牌）：自己佈局好了再說
     if name in ENERGY_FETCH_CARDS:
@@ -557,6 +579,10 @@ def choose_other(board, legal):
         return pick_counter_target(board, legal)               # Phantom Dive 的 6 個指示物
     if ctx in (CTX_NEW_ACTIVE, CTX_SWITCH, CTX_OPP_TARGET):
         return pick_pokemon(board, legal)
+    if card_info((board.select.get("effect") or {}).get("id")).get("name") in ENERGY_FETCH_CARDS:
+        crispin = pick_crispin(board, legal, ctx)
+        if crispin is not None:
+            return crispin
     if ctx == CTX_DISCARD_HAND:
         return pick_cards(board, legal, keep_value, prefer="low")
     if ctx in (CTX_TO_HAND, CTX_DECK_TO_BENCH):
@@ -564,6 +590,53 @@ def choose_other(board, legal):
 
     non_empty = [a for a in legal if a != "[]"]
     return non_empty[0] if non_empty else None
+
+
+CTX_CRISPIN_ATTACH_CARD = 22    # (1, 22) Crispin 第二張（直接貼上場的那張，顏色要不同）
+CTX_ATTACH_TARGET = 21          # (1, 21) 貼 contextCard 這張能量到哪一隻
+
+
+def energy_urgency(board, energy_type, mon):
+    """把這個顏色的能量貼給 mon 有多急：計畫招式缺這個顏色才算；貼完就湊齊、進化階段高、在戰鬥場的更急。"""
+    if not mon or energy_type is None:
+        return 0
+    missing = missing_energy(mon.get("energies"), plan_cost(mon.get("id")))
+    if energy_type not in missing:
+        return 1 if COLORLESS in missing else 0
+    card = card_info(mon.get("id"))
+    return 10 + (5 if len(missing) == 1 else 0) + (2 if card.get("stage2") else 1 if card.get("stage1") else 0) \
+        + (1 if mon is board.my_active else 0)
+
+
+def best_urgency(board, energy_type):
+    return max([energy_urgency(board, energy_type, m) for m in board.my_pokemon()] or [0])
+
+
+def pick_crispin(board, legal, ctx):
+    """Crispin：牌庫拿 2 張不同顏色的基本能量，第一張（context 7）加到手牌，第二張（context 22）直接貼上。
+    Codex 敗局分析：以前三題都選第一個，9 場把能量貼給 Meowth ex 這類不需要的、或選錯顏色。
+    - 這回合已經手貼過：手牌那張這回合用不到 → 最急的顏色留給「直接貼上」，手牌拿第二急的
+    - 還沒手貼：手牌拿最急的（等一下手貼），直接貼上的拿另一個顏色"""
+    def energy_of(action):
+        option = single_pick(board, action)
+        return card_info(board.option_card_id(option)).get("energyType") if option else None
+
+    choices = [a for a in legal if single_pick(board, a)]
+    if not choices:
+        return None
+    if ctx == CTX_ATTACH_TARGET:
+        energy_type = card_info(card_id_of(board.select.get("contextCard"))).get("energyType")
+        return max(choices, key=lambda a: energy_urgency(
+            board, energy_type, board.in_play(single_pick(board, a).get("area"), single_pick(board, a).get("index"))))
+    if ctx == CTX_CRISPIN_ATTACH_CARD:
+        return max(choices, key=lambda a: best_urgency(board, energy_of(a)))
+    if ctx == CTX_TO_HAND:
+        ranked = sorted({energy_of(a) for a in choices} - {None}, key=lambda t: -best_urgency(board, t))
+        if not ranked:
+            return None
+        want = ranked[1] if board.current.get("energyAttached") and len(ranked) > 1 else ranked[0]
+        return next(a for a in choices if energy_of(a) == want)
+    return None
 
 
 def pick_by_type(board, legal, wanted_types):

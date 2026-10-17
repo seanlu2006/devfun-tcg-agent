@@ -89,6 +89,9 @@ def synthetic_cases(strategy):
         ("戰鬥場的 Fezandipiti ex 本來就打得倒（2 張）：不出 Boss 拉 1 張的 Dreepy，直接 Phantom Dive",
          mirror_case(strategy, boss=True), "[2]"),
         ("手上只剩 Poké Pad 和接得上的 Drakloak：不出 Ultra Ball（會把 Drakloak 丟掉）", ultra_ball_case(strategy), "[1]"),
+        ("Drakloak 看到 Lillie's 和超能量、Dragapult ex 只缺超：拿超能量（looking 區）", codex_case(strategy, "looking"), "[1]"),
+        ("Drakloak 還能用特性：先用特性再進化", codex_case(strategy, "evolve"), "[1]"),
+        ("備戰區沒人：不用 Tuck Tail（會變成場上沒寶可夢判輸）", codex_case(strategy, "tuck"), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -149,6 +152,32 @@ def ultra_ball_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def codex_case(strategy, kind):
+    """2026-10-18 Codex 敗局分析找到的三種錯誤，各做一個最小局面。"""
+    ids = {}
+    for k, v in strategy.CARDS.items():
+        ids.setdefault(v["name"], k)
+    opp = {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}
+    me = {"bench": [], "benchMax": 5, "hand": [], "deckCount": 30}
+    current = {"yourIndex": 0, "turnActionCount": 2}
+    if kind == "looking":
+        me["active"] = [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2]}]
+        current["looking"] = [{"id": ids["Lillie's Determination"]}, {"id": ids["Basic {P} Energy"]}]
+        select = {"type": 1, "context": 7, "option": [{"area": 12, "type": 3, "index": 0}, {"area": 12, "type": 3, "index": 1}]}
+    elif kind == "evolve":
+        me["active"] = [{"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": []}]
+        me["hand"] = [{"id": ids["Dragapult ex"]}]
+        select = {"type": 0, "context": 0, "option": [{"type": 9, "area": 2, "index": 0, "inPlayArea": 4, "inPlayIndex": 0},
+                                                       {"type": 10, "area": 4, "index": 0}, {"type": 14}]}
+    else:
+        tuck = next(a for a in strategy.card_info(ids["Meowth ex"])["attacks"] if strategy.attack_info(a)["name"] == "Tuck Tail")
+        me["active"] = [{"id": ids["Meowth ex"], "hp": 150, "maxHp": 170, "energies": [7, 7, 7]}]
+        select = {"type": 0, "context": 0, "option": [{"type": 13, "attackId": tuck}, {"type": 14}]}
+    current["players"] = [me, opp]
+    return {"observation": {"current": current, "select": select},
+            "legalActions": [f"[{i}]" for i in range(len(select["option"]))]}
 
 
 def iter_decision_points():
