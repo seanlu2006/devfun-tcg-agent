@@ -806,6 +806,10 @@ def want_value(board, card_id, in_hand=False):
         return None
     in_play = board.names_in_play()
     if card.get("cardType") == CARD_POKEMON:
+        if card.get("basic") and board.bench_space() > 0 and len(board.my_pokemon()) < THIN_BENCH:
+            # 場上不到 3 隻：先拿能馬上放下的基礎寶可夢，比進化卡優先（2026-10-18 第 9 批：場上只有 Budew＋剛放下的
+            # Dreepy，Ultra Ball 搜 Drakloak（這回合本來就不能進化），被快攻一回合打倒一隻，第 6、8 回合就沒寶可夢判輸）
+            return 95 if EVOLVES_INTO.get(card.get("name")) else 92
         if card.get("evolvesFrom") in in_play:
             # 能馬上進化的；但手上的同名卡已經夠場上每一隻進化了，就不用再拿
             # （2026-10-18 第 6 批：場上只有 1 隻 Dreepy、手上已有 Drakloak，Ultra Ball 還是搜 Drakloak）
