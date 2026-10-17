@@ -430,7 +430,16 @@ def score_play_card(board, option):
     if card_type == CARD_POKEMON and card.get("basic"):
         if board.bench_space() <= 0:
             return -1
-        return SCORE["evolve"] - 1 if thin else SCORE["bench_basic"]  # 場上快沒寶可夢了：先鋪，不然被打倒就直接輸
+        if thin:
+            return SCORE["evolve"] - 1  # 場上快沒寶可夢了：先鋪，不然被打倒就直接輸
+        if prize_value(board.hand_card_id(option.get("index", 0))) >= 2 and not EVOLVES_INTO.get(name):
+            # 會送 2 張獎賞卡的配角 ex（Fezandipiti ex、Meowth ex）：不急著擺上備戰區當靶子
+            # （2026-10-17 第 2 批：輸的 5 場裡這兩隻被打倒 3 次＝送對手 6 張）
+            if name == "Meowth ex" and not any(card_info(card_id_of(c)).get("cardType") == CARD_SUPPORTER
+                                               for c in board.me.get("hand") or []):
+                return SCORE["draw"]  # Meowth ex 上場可以搜支援者：手上沒支援者時才值得
+            return SCORE["item"] - 5
+        return SCORE["bench_basic"]
     if name in SEARCH_POKEMON_CARDS:
         if board.bench_space() <= 0:
             return SCORE["item"]
