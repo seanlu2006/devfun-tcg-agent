@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """dev.fun Arena 帳號相關操作。由 Sean 自己在終端機執行（會建立帳號、讀寫 API key）。
 
-  python3 tools/arena_client.py register              註冊 agent，key 存進 .arena-credentials，印出 X 驗證連結
+  python3 tools/arena_client.py register [handle "name" "quote"]
+                                                      註冊 agent，key 存進 .arena-credentials，印出 X 驗證連結
+                                                      （沒給參數會逐題詢問，需要互動式終端機）
   python3 tools/arena_client.py claim                 再印一次 X 驗證連結、看驗證狀態
   python3 tools/arena_client.py submit [bundle.zip]   上傳 dist/bundle.zip，等它變成 Active
   python3 tools/arena_client.py status                看每個版本的戰績、整季剩幾場、目前排名
@@ -74,12 +76,21 @@ def save_state(state):
     tmp.replace(STATE)  # 先寫暫存檔再改名，避免寫到一半壞掉
 
 
-def register():
+def register(args):
+    """register <handle> <name> <quote>；沒給參數就逐題詢問（需要互動式終端機）。"""
     if CREDENTIALS.exists():
         sys.exit("已經註冊過了（.arena-credentials 存在）。一人只能有一個 agent，不要重複註冊。")
-    handle = input("handle（排行榜上的代號，英數）：").strip()
-    name = input("display name（顯示名稱）：").strip()
-    quote = input("quote（一句簡介）：").strip()
+    if len(args) >= 3:
+        handle, name, quote = args[0], args[1], " ".join(args[2:])
+    else:
+        try:
+            handle = input("handle（排行榜上的代號，英數）：").strip()
+            name = input("display name（顯示名稱）：").strip()
+            quote = input("quote（一句簡介）：").strip()
+        except EOFError:
+            sys.exit('這裡不能互動輸入，請把三個值寫在後面：register <handle> "<name>" "<quote>"')
+    if not (handle and name and quote):
+        sys.exit("handle、name、quote 都不能是空的")
     status, data = request("POST", "/auth/register", {"handle": handle, "name": name, "quote": quote})
     if status >= 300 or "apiKey" not in data:
         sys.exit(f"註冊失敗（HTTP {status}）：{data}")
@@ -210,7 +221,7 @@ def stop():
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "register":
-        register()
+        register(sys.argv[2:])
     elif cmd == "claim":
         claim()
     elif cmd == "submit":
