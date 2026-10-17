@@ -64,6 +64,8 @@ SWITCH_CARDS = {"Switch", "Scramble Switch"}
 # 訓練家卡按用途分（2026-10-17 第 1 場實戰輸在「備戰區沒鋪起來」：手上的 Crushing Hammer 跟搜寶可夢的卡同分，先被打出去）
 SEARCH_POKEMON_CARDS = {"Buddy-Buddy Poffin", "Ultra Ball", "Poké Pad", "Nest Ball", "Dawn", "Hilda"}
 DISRUPTION_CARDS = {"Crushing Hammer", "Enhanced Hammer", "Unfair Stamp", "Judge", "Xerosic’s Machinations"}
+ENERGY_FETCH_CARDS = {"Crispin"}        # 從牌庫拿基本能量
+RECOVERY_CARDS = {"Night Stretcher"}    # 從棄牌堆撿回寶可夢或基本能量
 THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
 LOW_DECK = 10   # 牌庫剩這麼少，就停止用找牌特性
 GUST_CARDS = {"Boss’s Orders", "Boss's Orders", "Prime Catcher"}
@@ -446,6 +448,13 @@ def score_play_card(board, option):
         return SCORE["evolve"] - 2 if thin else SCORE["draw"] + 5
     if name in DISRUPTION_CARDS:
         return SCORE["item"]  # 干擾對手（拆能量、洗手牌）：自己佈局好了再說
+    if name in ENERGY_FETCH_CARDS:
+        # 主力缺能量、手上又沒有對的能量 → 每回合唯一一張支援者先給 Crispin
+        # （2026-10-17 第 3 批：這種回合手上有 Crispin 17 次，只打出 8 次，其他被 Lillie's／Boss's 搶走）
+        return SCORE["attach_needed_bench"] + 2 if energy_starved(board) else SCORE["draw"] - 5
+    if name in RECOVERY_CARDS:
+        # Night Stretcher：棄牌堆有主力要的能量或主力線寶可夢才用，不然留著
+        return SCORE["draw"] + 5 if recoverable_value(board) else SCORE["item"] - 5
     if card_type == CARD_SUPPORTER:
         return SCORE["draw"]
     if card_type == CARD_ITEM:
@@ -605,6 +614,31 @@ def needed_colors(board):
             needs.update(plan_cost(cid))
     needs.discard(COLORLESS)
     return needs
+
+
+def hand_energy_types(board):
+    return {card_info(card_id_of(c)).get("energyType") for c in board.me.get("hand") or []
+            if card_info(card_id_of(c)).get("cardType") in (CARD_BASIC_ENERGY, CARD_SPECIAL_ENERGY)}
+
+
+def energy_starved(board):
+    """場上寶可夢的計畫招式還缺有顏色的能量，而手上沒有任何一張補得上。"""
+    missing = {e for m in board.my_pokemon() for e in missing_energy(m.get("energies"), plan_cost(m.get("id")))}
+    missing.discard(COLORLESS)
+    return bool(missing) and not (missing & hand_energy_types(board))
+
+
+def recoverable_value(board):
+    """棄牌堆裡有沒有值得撿回來的：需要的顏色的基本能量，或能接上場上進化線的寶可夢。"""
+    needs = needed_colors(board)
+    in_play = board.names_in_play()
+    for card in board.me.get("discard") or []:
+        info = card_info(card_id_of(card))
+        if info.get("cardType") == CARD_BASIC_ENERGY and info.get("energyType") in needs:
+            return True
+        if info.get("cardType") == CARD_POKEMON and (info.get("evolvesFrom") in in_play or EVOLVES_INTO.get(info.get("name"))):
+            return True
+    return False
 
 
 def keep_value(board, card_id):
