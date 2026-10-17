@@ -650,6 +650,14 @@ def score_play_card(board, option):
             return -1
         if thin:
             return SCORE["evolve"] - 1  # 場上快沒寶可夢了：先鋪，不然被打倒就直接輸
+        names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
+        if not EVOLVES_INTO.get(name) and (card.get("hp") or 0) <= 30 and name in names:
+            # 第二隻 Budew（30 HP）＝送對手一張獎賞卡（Codex 對局分析 0903e2e6：Mega Starmie 的備戰 50 點
+            # 同回合打倒兩隻 Budew）
+            return -1
+        if len(board.opp.get("prize") or []) <= 1 and len(names) >= THIN_BENCH:
+            # 對手只剩 1 張獎賞卡：新放的基礎寶可夢只是給對手的最後一個目標（0903e2e6 T10：新 Dreepy 被收掉最後一獎）
+            return -1
         if prize_value(board.hand_card_id(option.get("index", 0))) >= 2 and not EVOLVES_INTO.get(name):
             # 會送 2 張獎賞卡的配角 ex（Fezandipiti ex、Meowth ex）：不急著擺上備戰區當靶子
             # （2026-10-17 第 2 批：輸的 5 場裡這兩隻被打倒 3 次＝送對手 6 張）
@@ -742,6 +750,10 @@ def choose_other(board, legal):
         return pick_max_number(board, legal)                   # 高手 51/51 次選最大
     if ctx == CTX_BENCH_COUNTERS:
         return pick_counter_target(board, legal)               # Phantom Dive 的 6 個指示物
+    if ctx == CTX_OPP_TARGET and card_info((board.select.get("effect") or {}).get("id")).get("name") in COUNTER_MOVERS:
+        moved = pick_counter_move_target(board, legal)
+        if moved is not None:
+            return moved
     if ctx in (CTX_NEW_ACTIVE, CTX_SWITCH, CTX_OPP_TARGET):
         return pick_pokemon(board, legal)
     if card_info((board.select.get("effect") or {}).get("id")).get("name") in ENERGY_FETCH_CARDS:
@@ -894,6 +906,35 @@ def pick_counter_target(board, legal):
             key = (0, 0, 0, hurt, -hp)
         scored.append((key, action))
     return max(scored)[1] if scored else None
+
+
+COUNTER_MOVERS = {"Munkidori": 30}   # 特性：把自己身上的傷害指示物移到對手（最多 3 個＝30）
+
+
+def pick_counter_move_target(board, legal):
+    """Munkidori 移傷害：移完後「這回合打得倒」的優先——戰鬥場直接打；備戰區要手上有 Boss's Orders 而且
+    這回合還沒用支援者（或有 Prime Catcher）。都沒有就回傳 None，照舊規則選。
+    （Codex 對局分析 b57dfd61 T9：30 點放 Staryu；放備戰區 Mega Starmie 210→180，再 Boss＋Phantom Dive 就拿最後 3 獎；
+     四位 Dragapult 高手 1 比 0 支持）"""
+    moved = COUNTER_MOVERS[card_info((board.select.get("effect") or {}).get("id")).get("name")]
+    hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
+    can_gust = bool(hand & {"Prime Catcher"}) or (bool(hand & GUST_CARDS) and not board.current.get("supporterPlayed"))
+    best, best_gain = None, 0
+    for action in legal:
+        option = single_pick(board, action)
+        if not option or board.option_side(option) != "opp":
+            continue
+        mon = board.in_play(option.get("area"), option.get("index"), "opp") or {}
+        hp, dmg = mon.get("hp") or 0, board.max_damage_vs(mon)
+        if 0 < hp <= moved:
+            gain = prize_value(mon.get("id"))                       # 移過去就直接打倒
+        elif hp > dmg >= hp - moved and (option.get("area") == AREA_ACTIVE or can_gust):
+            gain = prize_value(mon.get("id"))                       # 移完變成這回合打得倒
+        else:
+            continue
+        if gain > best_gain:
+            best, best_gain = action, gain
+    return best
 
 
 COUNTER_IMMUNE_ENERGIES = {"Rock Fighting Energy", "Mist Energy"}

@@ -102,6 +102,7 @@ def synthetic_cases(strategy):
         ("瀕死的 Drakloak、這回合打不倒對手、備戰區有 Budew：撤退保住進化線", save_line_case(strategy), "[0]"),
         ("對手 9 張手牌、Unfair Stamp 合法：攻擊前先出", stamp_case(strategy), "[0]"),
         ("帶 Rock Fighting Energy 的 Solrock 放指示物無效：改放另一隻", rock_energy_case(strategy), "[1]"),
+        ("場上已有 Budew 和另外兩隻：不再鋪第二隻 Budew（30 HP 送分）", second_budew_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -317,6 +318,20 @@ def rock_energy_case(strategy):
     options = [{"area": 5, "type": 3, "index": 0, "playerIndex": 1}, {"area": 5, "type": 3, "index": 1, "playerIndex": 1}]
     obs = {"current": {"yourIndex": 0, "players": players},
            "select": {"type": 1, "context": 14, "remainDamageCounter": 6, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def second_budew_case(strategy):
+    ids = _ids(strategy)
+    players = [{"active": [{"id": ids["Budew"], "hp": 30, "maxHp": 30, "energies": []}],
+                "bench": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []},
+                          {"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}],
+                "benchMax": 5, "hand": [{"id": ids["Budew"]}], "deckCount": 40},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5,
+                "prize": [None] * 6}]
+    options = [{"type": 7, "index": 0}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1},
+           "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]"]}
 
 
