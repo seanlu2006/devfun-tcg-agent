@@ -65,6 +65,7 @@ SWITCH_CARDS = {"Switch", "Scramble Switch"}
 SEARCH_POKEMON_CARDS = {"Buddy-Buddy Poffin", "Ultra Ball", "Poké Pad", "Nest Ball", "Dawn", "Hilda"}
 DISRUPTION_CARDS = {"Crushing Hammer", "Enhanced Hammer", "Unfair Stamp", "Judge", "Xerosic’s Machinations"}
 THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
+LOW_DECK = 10   # 牌庫剩這麼少，就停止用找牌特性
 GUST_CARDS = {"Boss’s Orders", "Boss's Orders", "Prime Catcher"}
 BOARD_CHANGING_CARDS = SWITCH_CARDS | GUST_CARDS | {"Energy Switch"}
 
@@ -303,6 +304,28 @@ class Board:
             dmg -= 30
         return max(dmg, 0)
 
+    def power_now(self, pokemon):
+        """這隻寶可夢「現在就付得起」的招式裡，最高的基礎傷害（付不起任何一招＝0）。"""
+        if not pokemon:
+            return 0
+        best = 0
+        for attack_id in card_info(pokemon.get("id")).get("attacks") or []:
+            atk = attack_info(attack_id)
+            if not missing_energy(pokemon.get("energies"), atk.get("energies") or []):
+                best = max(best, atk.get("damage") or 0)
+        return best
+
+    def better_attacker_on_bench(self):
+        """備戰區有沒有一隻「現在就能打、而且明顯比戰鬥場那隻強」的（至少 60，且多 50 以上）。
+        2026-10-17 實戰：舊規則只看「戰鬥場打不打得出招式」，Budew 的 10 點招式不用能量，
+        於是整場卡在戰鬥場，備戰區的 Dragapult ex 從沒上來；也發生過把 Meowth ex 換成只打 10 的 Dreepy。"""
+        active_power = self.power_now(self.my_active)
+        for mon in self.me.get("bench") or []:
+            p = self.power_now(mon)
+            if p >= 60 and p >= active_power + 50:
+                return True
+        return False
+
     def best_damage_now(self):
         """主要回合裡「現在合法的招式」能打出的最高估計傷害（打對手戰鬥場）。"""
         best = 0
@@ -342,6 +365,9 @@ def score_main_option(board, option):
         return score_play_card(board, option)
 
     if kind == OPT_ABILITY:
+        # 牌庫快見底就別再用找牌／抽牌類特性（2026-10-17 實戰：3 隻 Drakloak 每回合都找牌，牌庫被抽光判輸）
+        if (board.me.get("deckCount") or 99) <= LOW_DECK:
+            return 5
         return SCORE["ability"]
 
     if kind == OPT_ATTACK:
@@ -352,11 +378,8 @@ def score_main_option(board, option):
         return SCORE["attack"] + damage / 1000                   # 打不倒：佈局之後再打，同分挑傷害高的
 
     if kind == OPT_RETREAT:
-        # 戰鬥場打不出招式、備戰區有一隻已經可以打 → 撤退換牠上來
-        ready = [m for m in board.me.get("bench") or [] if m and board.can_attack_now(m)]
-        if not board.can_attack_now(board.my_active) and ready:
-            return SCORE["retreat_ready"]
-        return -10
+        # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
+        return SCORE["retreat_ready"] if board.better_attacker_on_bench() else -10
 
     if kind == OPT_END_TURN:
         return SCORE["end_turn"]
@@ -374,10 +397,15 @@ def score_attach(board, option):
         return SCORE["attach_extra"]
     energy_type = card_info(board.hand_card_id(option.get("index", 0))).get("energyType")
     on_active = option.get("inPlayArea") == AREA_ACTIVE
+    # 同分時的優先順序（2026-10-17 實戰：超能量貼給了 Drakloak，差一個就能打的 Dragapult ex 反而沒拿到）：
+    # 貼完就湊齊的 +4 ＞ 進化階段高的（2 階 +2、1 階 +1）＞ 戰鬥場 +1
+    card = card_info(target.get("id"))
+    bonus = (4 if len(missing) == 1 else 0) + (2 if card.get("stage2") else 1 if card.get("stage1") else 0) \
+        + (1 if on_active else 0)
     if energy_type is not None and energy_type in missing and energy_type != COLORLESS:
-        return SCORE["attach_needed_active" if on_active else "attach_needed_bench"] + (2 if on_active else 0)
+        return SCORE["attach_needed_active" if on_active else "attach_needed_bench"] + bonus
     if COLORLESS in missing or energy_type is None:
-        return SCORE["attach_colorless"] + (2 if on_active else 0)
+        return SCORE["attach_colorless"] + bonus
     return SCORE["attach_extra"]  # 顏色不對：除非沒別的事做，不然不貼
 
 
@@ -386,9 +414,8 @@ def score_play_card(board, option):
     name, card_type = card.get("name"), card.get("cardType")
 
     if name in SWITCH_CARDS:
-        # 戰鬥場打不出招式、備戰區有人準備好了，才換
-        ready = [m for m in board.me.get("bench") or [] if m and board.can_attack_now(m)]
-        return SCORE["retreat_ready"] if ready and not board.can_attack_now(board.my_active) else -1
+        # 備戰區有明顯更強、而且現在就能打的，才換
+        return SCORE["retreat_ready"] if board.better_attacker_on_bench() else -1
     if name in GUST_CARDS:
         # 對手備戰區有一隻「拉上來就打得倒」的 → 拉（獎賞卡越多越優先）
         damage = board.best_damage_now()
