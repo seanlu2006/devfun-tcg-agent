@@ -60,6 +60,11 @@ DAMAGE_COUNTER = 10        # 一個傷害指示物＝10 點
 # 會改變誰在戰鬥場的卡。Switch 類只在「戰鬥場打不出招式、備戰區有人準備好」時才出；
 # Boss's Orders 類只在「拉上來就打得倒」時才出（見 score_main_option）。
 SWITCH_CARDS = {"Switch", "Scramble Switch"}
+
+# 訓練家卡按用途分（2026-10-17 第 1 場實戰輸在「備戰區沒鋪起來」：手上的 Crushing Hammer 跟搜寶可夢的卡同分，先被打出去）
+SEARCH_POKEMON_CARDS = {"Buddy-Buddy Poffin", "Ultra Ball", "Poké Pad", "Nest Ball", "Dawn", "Hilda"}
+DISRUPTION_CARDS = {"Crushing Hammer", "Enhanced Hammer", "Unfair Stamp", "Judge", "Xerosic’s Machinations"}
+THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
 GUST_CARDS = {"Boss’s Orders", "Boss's Orders", "Prime Catcher"}
 BOARD_CHANGING_CARDS = SWITCH_CARDS | GUST_CARDS | {"Energy Switch"}
 
@@ -394,12 +399,21 @@ def score_play_card(board, option):
     if name in BOARD_CHANGING_CARDS:
         return -1  # TODO(Sean)：Energy Switch 等其他換位／移能量的卡，還沒寫條件，先不出
 
+    thin = len(board.my_pokemon()) < THIN_BENCH
     if card_type == CARD_POKEMON and card.get("basic"):
-        return SCORE["bench_basic"] if board.bench_space() > 0 else -1
+        if board.bench_space() <= 0:
+            return -1
+        return SCORE["evolve"] - 1 if thin else SCORE["bench_basic"]  # 場上快沒寶可夢了：先鋪，不然被打倒就直接輸
+    if name in SEARCH_POKEMON_CARDS:
+        if board.bench_space() <= 0:
+            return SCORE["item"]
+        return SCORE["evolve"] - 2 if thin else SCORE["draw"] + 5
+    if name in DISRUPTION_CARDS:
+        return SCORE["item"]  # 干擾對手（拆能量、洗手牌）：自己佈局好了再說
     if card_type == CARD_SUPPORTER:
         return SCORE["draw"]
     if card_type == CARD_ITEM:
-        return SCORE["draw"] if board.bench_space() > 0 else SCORE["item"]  # 搜寶可夢的物品在備戰區滿了就沒用
+        return SCORE["draw"] if board.bench_space() > 0 else SCORE["item"]
     if card_type == CARD_TOOL:
         return SCORE["tool"]
     if card_type == CARD_STADIUM:

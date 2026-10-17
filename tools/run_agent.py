@@ -49,6 +49,7 @@ class Runner:
         self.stop_after_match = False
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         self.log_path = RUN_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+        self.obs_path = self.log_path.with_name(self.log_path.stem + "_obs.jsonl")
 
     def log(self, **event):
         event["t"] = time.strftime("%H:%M:%S")
@@ -61,7 +62,10 @@ class Runner:
     # ---------------------------------------------------------------- 加入
     def join(self):
         body = {"competitionId": ac.COMPETITION_ID}
-        if not self.state.get("deck_locked"):
+        if self.state.get("deck_locked") and self.state.get("deck"):
+            # 官方說明檔說重新加入不用再帶牌組，但伺服器實際上每次都要（2026-10-17 實測 422）→ 帶已鎖定的同一副
+            body["joinPayload"] = self.state["deck"]
+        elif not self.state.get("deck_locked"):
             if not self.args.deck:
                 sys.exit("還沒加入過這一季：第一次要用 --deck 指定牌組（會整季鎖定）")
             deck = json.loads(Path(self.args.deck).read_text())
@@ -82,7 +86,7 @@ class Runner:
         if status >= 300:
             sys.exit(f"加入失敗（HTTP {status}）：{data}")
 
-        if "joinPayload" in body:
+        if "joinPayload" in body and not self.state.get("deck_locked"):
             self.state.update(deck_locked=True, deck=body["joinPayload"], deck_name=Path(self.args.deck).stem)
             ac.save_state(self.state)
             print(f"已用牌組 {Path(self.args.deck).stem} 加入，這一季的牌組已鎖定。")
@@ -110,6 +114,10 @@ class Runner:
         self.log(event="action", matchId=pending["matchId"], seq=pending["seq"], action=action,
                  select=[select.get("type"), select.get("context")], legal=len(legal),
                  ms=round((time.time() - started) * 1000), http=status, matchStatus=data.get("matchStatus"))
+        # 完整盤面（含自己的手牌）另存一份：公開紀錄會把手牌遮掉，這是之後改策略唯一看得到手牌的資料
+        with self.obs_path.open("a") as f:
+            f.write(json.dumps({"matchId": pending["matchId"], "seq": pending["seq"], "action": action,
+                                "legalActions": legal, "obs": context["observation"]}, ensure_ascii=False) + "\n")
         return data.get("matchStatus")
 
     def finish_match(self, match_id, match_status):

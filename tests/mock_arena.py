@@ -3,7 +3,7 @@
 
 模仿的端點：POST /tcg/join、GET /tcg/pending-actions、POST /tcg/action、GET /tcg/battle/{id}
 刻意安排的情境：
-  - 第一次加入沒帶牌組 → 422；牌組鎖定後帶不同牌組 → 409 payload_locked
+  - 每次加入都要帶牌組（沒帶 → 422，跟真伺服器一樣）；牌組鎖定後帶不同牌組 → 409 payload_locked
   - 每隔幾次詢問就回「輪到對手」（pending 空、activeMatches 有東西）
   - 單數場在「我們這一步」結束（action 回 Settled）；雙數場在「對手那一步」結束（我們收不到結束回應）
 """
@@ -45,11 +45,12 @@ class MockArena:
     def join(self, body):
         self.joins += 1
         payload = body.get("joinPayload")
+        # 跟真伺服器一樣（2026-10-17 實測）：每次加入都要帶 60 張牌組；牌組鎖定後帶不同的 → 409
+        if not isinstance(payload, list) or len(payload) != 60:
+            return 422, {"error": "invalid_join_payload", "message": "joinPayload must be a deck of 60"}
         if self.deck is None:
-            if not isinstance(payload, list) or len(payload) != 60:
-                return 422, {"error": "invalid_join_payload", "message": "joinPayload must be a deck of 60"}
             self.deck = payload
-        elif payload is not None and payload != self.deck:
+        elif payload != self.deck:
             return 409, {"error": "payload_locked"}
         if self.current and self.status[self.current["id"]] == "Active":
             return 200, {"status": "matched", "matchId": self.current["id"]}
