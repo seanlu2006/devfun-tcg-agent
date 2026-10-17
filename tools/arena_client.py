@@ -130,7 +130,14 @@ def multipart(fields, file_field, file_path):
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
+OWNER_HOSTED = True  # TCG Playground S3 是 owner-hosted：伺服器不收 bundle（2026-10-17 實測兩種錯誤都確認了）
+
+
 def submit(bundle_path):
+    if OWNER_HOSTED:
+        sys.exit("這一季（TCG Playground S3）是 owner-hosted，不收上傳。\n"
+                 "請改用：python3 tools/run_agent.py --deck decks/<牌組>.json --max-matches 3\n"
+                 "（⚠️ 第一次執行會把牌組鎖定整季，先決定好牌組）")
     if not bundle_path.exists():
         sys.exit(f"找不到 {bundle_path}，先跑 tools/build_bundle.py")
     cred = load_credentials()
