@@ -85,6 +85,9 @@ def synthetic_cases(strategy):
         ("對手是 Crustle（ex 打不動）、備戰區有充好能量的 Drakloak：撤退換人", crustle_case(strategy, drakloak_ready=True), "[0]"),
         ("對手是 Crustle、沒人能換：選 Phantom Dive（備戰區指示物照樣有效），不選 Jet Headbutt",
          crustle_case(strategy, drakloak_ready=False), "[1]"),
+        ("兩招都打得倒 Dreepy：選 Phantom Dive（多 6 個指示物），不選 Jet Headbutt", mirror_case(strategy, boss=False), "[1]"),
+        ("戰鬥場的 Fezandipiti ex 本來就打得倒（2 張）：不出 Boss 拉 1 張的 Dreepy，直接 Phantom Dive",
+         mirror_case(strategy, boss=True), "[2]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -101,6 +104,30 @@ def crustle_case(strategy, drakloak_ready):
                {"active": [{"id": ids["Crustle"], "hp": 150, "maxHp": 150, "energies": []}], "bench": [], "benchMax": 5}]
     options = [{"type": 12}, {"type": 13, "attackId": atk["Phantom Dive"]}, {"type": 13, "attackId": atk["Jet Headbutt"]},
                {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": [f"[{i}]" for i in range(len(options))]}
+
+
+def mirror_case(strategy, boss):
+    """2026-10-18 第 6 批的同流派局面：戰鬥場 Dragapult ex（火＋超）。
+    boss=False：對手戰鬥場是 70 HP 的 Dreepy；選項 [0] Jet Headbutt、[1] Phantom Dive、[2] 結束。
+    boss=True：對手戰鬥場是 140 HP 的 Fezandipiti ex、備戰區有 Dreepy；
+               選項 [0] 出 Boss's Orders、[1] Jet Headbutt、[2] Phantom Dive、[3] 結束。"""
+    ids = {}
+    for k, v in strategy.CARDS.items():
+        ids.setdefault(v["name"].replace("’", "'"), k)
+    atk = {strategy.attack_info(a)["name"]: a for a in strategy.card_info(ids["Dragapult ex"])["attacks"]}
+    dreepy = {"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}
+    fez = {"id": ids["Fezandipiti ex"], "hp": 140, "maxHp": 210, "energies": []}
+    attacks = [{"type": 13, "attackId": atk["Jet Headbutt"]}, {"type": 13, "attackId": atk["Phantom Dive"]}]
+    if boss:
+        opp, hand, options = {"active": [fez], "bench": [dreepy]}, [{"id": ids["Boss's Orders"]}], \
+            [{"type": 7, "index": 0}] + attacks + [{"type": 14}]
+    else:
+        opp, hand, options = {"active": [dreepy], "bench": []}, [], attacks + [{"type": 14}]
+    players = [{"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}],
+                "bench": [], "benchMax": 5, "hand": hand, "deckCount": 30}, dict(opp, benchMax=5)]
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": [f"[{i}]" for i in range(len(options))]}

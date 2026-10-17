@@ -169,6 +169,18 @@ def bench_spread(attack_id):
     return 0
 
 
+def spread_ko_prizes(board, spread):
+    """招式放到對手備戰區的 spread 點傷害，最多能順便打倒幾張獎賞卡（從 HP 最低的開始塞，夠就算）。"""
+    prizes, left = 0, spread
+    for mon in sorted((m for m in board.opp.get("bench") or [] if m and (m.get("hp") or 0) > 0),
+                      key=lambda m: m.get("hp")):
+        if mon["hp"] > left:
+            break
+        left -= mon["hp"]
+        prizes += prize_value(mon.get("id"))
+    return prizes
+
+
 def plan_cost(card_id, depth=2):
     """這隻寶可夢「打算用的招式」要什麼能量：看自己和往後 depth 階的進化型，取傷害最高的那招。
     例：Dreepy 的計畫招式是 Dragapult ex 的 Phantom Dive（火＋超）——能量先貼在 Dreepy 上，進化後就能直接打。"""
@@ -404,12 +416,18 @@ def score_main_option(board, option):
 
     if kind == OPT_ATTACK:
         damage = board.damage_against(option.get("attackId"), board.my_active, board.opp_active)
+        spread = bench_spread(option.get("attackId"))
         opp = board.opp_active
+        prizes = spread_ko_prizes(board, spread)   # 放到備戰區的指示物順便打倒的
         if opp and damage >= (opp.get("hp") or 0) > 0:
-            return SCORE["attack_ko"] + prize_value(opp.get("id"))  # 打得倒：拿獎賞卡，優先
-        # 打不倒：佈局之後再打，同分挑「總價值」高的——Phantom Dive 這類招式另外有 60 點放到備戰區
-        # （打 Crustle 時本體是 0，但備戰區的 6 個指示物照樣有效，所以要選它而不是 Jet Headbutt）
-        return SCORE["attack"] + (damage + bench_spread(option.get("attackId"))) / 1000
+            prizes += prize_value(opp.get("id"))
+        # 同分挑「總價值」高的——Phantom Dive 這類招式另外有 60 點放到備戰區
+        # （打 Crustle 時本體是 0，但備戰區的 6 個指示物照樣有效，所以要選它而不是 Jet Headbutt；
+        #  2026-10-18 第 6 批：兩招都打得倒 70 HP 的 Dreepy，卻選了 Jet Headbutt，白白浪費 6 個指示物）
+        tiebreak = (damage + spread) / 1000
+        if prizes:
+            return SCORE["attack_ko"] + prizes + tiebreak  # 打得倒：拿獎賞卡，優先
+        return SCORE["attack"] + tiebreak
 
     if kind == OPT_RETREAT:
         # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
@@ -453,11 +471,18 @@ def score_play_card(board, option):
     if name in GUST_CARDS:
         # 對手備戰區有一隻「拉上來就打得倒」的 → 拉（獎賞卡越多越優先）
         # 逐隻用 damage_against 算：戰鬥場是 Crustle 這類打不動的牆時，也能把後面打得動的拉上來
+        # 但戰鬥場那隻本來就打得倒、獎賞卡又不比較少 → 不用出（2026-10-18 第 6 批：戰鬥場 140 HP 的
+        # Fezandipiti ex 一擊就倒＝2 張，卻出 Boss 拉 70 HP 的 Dreepy＝1 張，還浪費一張 Boss）
         attacks = [o.get("attackId") for o in board.options if isinstance(o, dict) and o.get("type") == OPT_ATTACK]
         targets = [m for m in board.opp.get("bench") or [] if m and 0 < (m.get("hp") or 0)
                    <= max([board.damage_against(a, board.my_active, m) for a in attacks] or [0])]
         if targets and board.can_attack_now(board.my_active):
-            return SCORE["attack_ko"] + 5 + max(prize_value(m.get("id")) for m in targets)
+            best_bench = max(prize_value(m.get("id")) for m in targets)
+            opp = board.opp_active
+            active_ko = opp and 0 < (opp.get("hp") or 0) <= board.max_damage_vs(opp)
+            if active_ko and prize_value(opp.get("id")) >= best_bench:
+                return -1
+            return SCORE["attack_ko"] + 5 + best_bench
         return -1
     if name in BOARD_CHANGING_CARDS:
         return -1  # TODO(Sean)：Energy Switch 等其他換位／移能量的卡，還沒寫條件，先不出
@@ -597,9 +622,11 @@ def pokemon_value(board, mon, side):
         # Boss's Orders：拉上來是為了打倒拿獎賞卡 →「打得倒的」先，其中獎賞卡多的優先，再來 HP 低的。
         # 一定要先看打不打得倒：出 Boss 的理由就是「有打得倒的目標」，選目標時要用同一個條件
         # （Codex 審查抓到：舊規則只看獎賞卡，會拉 320 HP 打不倒的 Dragapult ex，放過 60 HP 的 Dreepy）
+        # 打得倒的裡面挑 HP 高的（＝進化過、對手投資比較多的：同流派時 Drakloak 比 Dreepy 值得打）；
+        # 打不倒的才挑 HP 低的
         hp = mon.get("hp") or 0
         killable = 0 < hp <= board.max_damage_vs(mon)
-        return (1 if killable else 0, prize_value(mon.get("id")), -hp, energies)
+        return (1 if killable else 0, prize_value(mon.get("id")), hp if killable else -hp, energies)
     return (-(mon.get("hp") or 0), energies, 0)
 
 
