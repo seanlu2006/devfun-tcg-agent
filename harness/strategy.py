@@ -431,6 +431,9 @@ class Board:
                 if bonus and dmg > 0:
                     total = len(attacker.get("energies") or []) + len((self.my_active or {}).get("energies") or [])
                     dmg += int(bonus.group(1)) * total
+                optional = re.search(r"you may [^.]*?(\d+) more damage", (attack_info(attack_id).get("text") or "").lower())
+                if optional and dmg > 0:
+                    dmg += int(optional.group(1))   # 「可以棄能量多打 N」：對手會用（Codex 敗局分析 24eb937e：Riotous Blasting 200＋130）
                 dmg = max(dmg, self.hand_counter_damage(attack_id))
                 best = max(best, dmg)
         return best
@@ -614,6 +617,8 @@ def score_attach(board, option):
         # 排在進化（90）、特性（88）之後：高手多半先進化、先用 Drakloak 看牌，再貼（高手對照 2026-10-18）
         return SCORE["ability"] - 2
     energy_type = card_info(board.hand_card_id(option.get("index", 0))).get("energyType")
+    if option.get("inPlayArea") == AREA_ACTIVE and wasted_on_doomed_active(board, target, energy_type):
+        return SCORE["attach_extra"]
     ability_energy = ABILITY_ENERGY.get(card_info(target.get("id")).get("name"))
     if ability_energy is not None and energy_type == ability_energy and ability_energy not in (target.get("energies") or []):
         # 惡能量貼給還沒有惡能量的 Munkidori，牠的特性才能用（Codex 敗局分析 d963cd2f；高手 15 比 1）
@@ -662,6 +667,20 @@ def missing_evolution(board, search_card):
             if evo_card.get("name") not in hand:
                 return True
     return False
+
+
+def wasted_on_doomed_active(board, target, energy_type):
+    """戰鬥場是非 ex 配角（不在進化線上）、貼完這回合還是打不出招、對手現在就打得倒它，
+    而備戰區有進化線要這個顏色 → 這張能量別給它（Codex 對局分析 a528c722 T5：超能量貼給 Munkidori，隔回合被打倒）。"""
+    card = card_info(target.get("id"))
+    if card.get("ex") or card.get("megaEx") or EVOLVES_INTO.get(card.get("name")) or card.get("stage1") or card.get("stage2"):
+        return False
+    if board.opp_threat(target) < (target.get("hp") or 0):
+        return False
+    after = (target.get("energies") or []) + [energy_type]
+    if any(not missing_energy(after, attack_info(a).get("energies") or []) for a in card.get("attacks") or []):
+        return False
+    return bool(board.me.get("bench"))   # 備戰區有別人可以接這張能量
 
 
 def needs_energy_to_retreat(board):
@@ -726,6 +745,8 @@ def score_play_card(board, option):
     if name in DISCARD_COST_CARDS and not can_afford_discard(board, option.get("index", 0), DISCARD_COST_CARDS[name]):
         # 2026-10-18 第 6 批：手上只剩 Poké Pad 和 Drakloak 還出 Ultra Ball，丟掉 Drakloak 去搜另一張 Drakloak
         return -1
+    if name in EVOLUTION_SEARCH_CARDS and missing_engine(board) and missing_evolution(board, name):
+        return SCORE["evolve"] - 3   # 場上有 Dreepy 卻沒有任何 Drakloak：先把找牌引擎搜出來（Codex 對局分析 76378bdb）
     if name in SEARCH_POKEMON_CARDS:
         if board.bench_space() <= 0:
             # 滿場也還能搜「場上缺的進化卡」（Codex 敗局分析 d963cd2f：滿場時 Poké Pad 一直留在手上；高手 13 比 0）
@@ -1078,6 +1099,11 @@ def want_value(board, card_id, in_hand=False):
     if card.get("cardType") == CARD_SUPPORTER:
         if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):
             return 85   # 缺能量又還沒用支援者：Crispin 一張補 2 個能量（Codex 敗局分析 c0e4aafc、d601a6ff）
+        if card.get("name") in DRAW_SUPPORTERS and (energy_starved(board) or active_color_starved(board)) \
+                and not board.current.get("supporterPlayed") \
+                and not any(card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS | ENERGY_FETCH_CARDS
+                            for c in board.me.get("hand") or []):
+            return 84   # 缺色、手上沒抽牌也沒 Crispin：拿 Lillie's 去找（Codex 對局分析 7fbdf3b8：一直拿錯色能量、Boss）
         return 40
     if card.get("name") in SEARCH_POKEMON_CARDS:
         return 45
@@ -1096,6 +1122,16 @@ def needed_colors(board):
             needs.update(plan_cost(cid))
     needs.discard(COLORLESS)
     return needs
+
+
+def active_color_starved(board):
+    """戰鬥場計畫招式缺的有色能量，手上（這回合還能貼的話）補不上。"""
+    active = board.my_active
+    if not active:
+        return False
+    missing = set(missing_energy(active.get("energies"), plan_cost(active.get("id")))) - {COLORLESS}
+    usable = set() if board.current.get("energyAttached") else hand_energy_types(board)
+    return bool(missing) and not (missing & usable)
 
 
 def hand_energy_types(board):
@@ -1141,7 +1177,9 @@ def keep_value(board, card_id):
     card = card_info(card_id)
     if card.get("name") in DRAW_SUPPORTERS and not board.current.get("supporterPlayed") \
             and sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS) == 1:
-        return 75   # 唯一的抽牌支援者別丟（Codex 敗局分析 6a4693e4：Ultra Ball 丟了唯一的 Lillie's，之後兩回合停機）
+        return 75
+    if card.get("name") in ENERGY_FETCH_CARDS and hand_count(board, card.get("name")) == 1:
+        return 75   # 唯一的 Crispin 別丟（Codex 對局分析 7fbdf3b8 T1：丟了 Crispin，首次 Phantom Dive 拖到 T13）   # 唯一的抽牌支援者別丟（Codex 敗局分析 6a4693e4：Ultra Ball 丟了唯一的 Lillie's，之後兩回合停機）
     if card.get("cardType") == CARD_BASIC_ENERGY:
         value = max(value, 45)
     elif card.get("cardType") == CARD_ITEM and hand_count(board, card.get("name")) >= 2:
@@ -1178,7 +1216,18 @@ def can_afford_discard(board, hand_index, n):
     if len(others) < n:
         return False
     cheapest = sorted(keep_value(board, cid) for cid in others)[:n]
-    return all(v < 60 for v in cheapest)
+    # 場上有 Dreepy 卻沒有任何 Drakloak／Dragapult、手上也沒有：找引擎比留一張能量重要，門檻放寬到 75
+    # （Codex 對局分析 76378bdb T13：嫌火能量太貴不出 Ultra Ball，整場沒進化過）
+    limit = 75 if missing_engine(board) else 60
+    return all(v < limit for v in cheapest)
+
+
+def missing_engine(board):
+    names = [card_info(m.get("id")) for m in board.my_pokemon()]
+    has_base = any(c.get("basic") and EVOLVES_INTO.get(c.get("name")) for c in names)
+    has_evolved = any(c.get("stage1") or c.get("stage2") for c in names)
+    hand_evo = any(card_info(card_id_of(c)).get("stage1") for c in board.me.get("hand") or [])
+    return has_base and not has_evolved and not hand_evo
 
 
 def pick_cards(board, legal, value_fn, prefer):
