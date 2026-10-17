@@ -134,8 +134,10 @@ def submit(bundle_path):
     if not bundle_path.exists():
         sys.exit(f"找不到 {bundle_path}，先跑 tools/build_bundle.py")
     cred = load_credentials()
-    # introspection：必填欄位是 competitionId 與 file（官方 md 寫 bundle，兩者衝突時以 introspection 為準）
-    body, ctype = multipart({"competitionId": COMPETITION_ID, "template": "engine-agent"}, "file", bundle_path)
+    # introspection：必填欄位是 competitionId 與 file（官方 md 寫 bundle，兩者衝突時以 introspection 為準）。
+    # template 不送：伺服器會拒絕 template=engine-agent（「template must be llm-agent or static-agent」），
+    # 而 introspection 說 hosted engine 比賽會自己判斷成 engine-agent。
+    body, ctype = multipart({"competitionId": COMPETITION_ID}, "file", bundle_path)
     for attempt in range(4):
         status, data = request("POST", "/submissions", body, key=cred["apiKey"], content_type=ctype)
         transient = status >= 500 or data.get("errorCode") in TRANSIENT_ERRORS or data.get("code") in TRANSIENT_ERRORS
