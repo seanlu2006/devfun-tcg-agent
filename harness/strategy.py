@@ -468,7 +468,8 @@ def pick_max_number(board, legal):
 def pick_counter_target(board, legal):
     """一次放一個傷害指示物（剩幾個看 select.remainDamageCounter），照高手的做法：
     1. 剩下的指示物夠打倒的 → 放那隻（獎賞卡多的優先，再來 HP 高的，已經受傷的優先，免得浪費）
-    2. 都打不倒 → 放 HP 最低的，替下一回合鋪路"""
+    2. 都打不倒 → 先放「已經受傷的」，再挑 HP 最低的，替下一回合鋪路
+       （2026-10-17 比較 6 種放法：這種最接近高手，訓練組 69% → 76%、驗收組 85% → 86%）"""
     remain = (board.select.get("remainDamageCounter") or 1) * DAMAGE_COUNTER
     scored = []
     for action in legal:
@@ -481,23 +482,28 @@ def pick_counter_target(board, legal):
             continue  # 已經 0 HP（等著被打倒）的不用再放
         hurt = hp < ((mon or {}).get("maxHp") or hp)
         if hp <= remain:
-            key = (1, prize_value(mon.get("id")), hp, hurt)
+            key = (1, prize_value(mon.get("id")), hp, hurt, 0)
         else:
-            key = (0, 0, -hp, hurt)
+            key = (0, 0, 0, hurt, -hp)
         scored.append((key, action))
     return max(scored)[1] if scored else None
 
 
 def pokemon_value(board, mon, side):
-    """挑寶可夢時的分數。自己的：能打的、傷害高的、HP 高的優先；對手的：打得倒的、獎賞卡多的、HP 低的優先。"""
+    """挑寶可夢時的分數（2026-10-17 用高手對戰的訓練組／驗收組比較過幾種規則）：
+    自己的（上戰鬥場、Switch）：身上能量多的 → 現在就能打的 → 傷害高的。驗收組 78% → 85%
+    對手的（選目標、Boss's Orders）：HP 最低的 → 身上能量多的（威脅大）。驗收組 30% → 67%
+      舊規則「獎賞卡多優先」會一直挑 HP 320 的 Dragapult ex，等於挑最難打的。"""
     if not mon:
         return (-1, 0, 0)
+    energies = len(mon.get("energies") or [])
     if side == "me":
         atk = best_attack(mon.get("id"))
-        return (1 if board.can_attack_now(mon) else 0, atk[1] if atk else 0, mon.get("hp") or 0)
-    hp = mon.get("hp") or 0
-    killable = 0 < hp <= max(board.best_damage_now(), 1)
-    return (1 if killable else 0, prize_value(mon.get("id")), -hp)
+        return (energies, 1 if board.can_attack_now(mon) else 0, atk[1] if atk else 0)
+    if board.select.get("context") == CTX_SWITCH:
+        # Boss's Orders：把對手拉上來是為了打倒拿獎賞卡 → 獎賞卡多的優先（這題用舊規則一致率較高：72% vs 61%）
+        return (prize_value(mon.get("id")), -(mon.get("hp") or 0), energies)
+    return (-(mon.get("hp") or 0), energies, 0)
 
 
 def pick_pokemon(board, legal):

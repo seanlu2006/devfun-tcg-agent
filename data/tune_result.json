@@ -1,0 +1,34 @@
+{
+ "handles": "StartupBros,godam,keris,clairenuttall,grimm_grinder",
+ "train": [
+  0.39445983379501387,
+  0.4005540166204986
+ ],
+ "test": [
+  0.3439878234398782,
+  0.350076103500761
+ ],
+ "changed": {
+  "attack_ko": [
+   60,
+   40
+  ]
+ },
+ "score": {
+  "evolve": 90,
+  "attach_needed_active": 85,
+  "attach_needed_bench": 80,
+  "attach_colorless": 65,
+  "bench_basic": 70,
+  "attack_ko": 40,
+  "ability": 88,
+  "draw": 50,
+  "attack": 40,
+  "retreat_ready": 75,
+  "item": 30,
+  "tool": 25,
+  "stadium": 20,
+  "attach_extra": 15,
+  "end_turn": 0
+ }
+}
