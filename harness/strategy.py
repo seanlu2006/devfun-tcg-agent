@@ -572,7 +572,10 @@ def score_main_option(board, option):
             return 1
         # 牌庫快見底就別再用找牌／抽牌類特性（2026-10-17 實戰：3 隻 Drakloak 每回合都找牌，牌庫被抽光判輸）
         deck_count = board.me.get("deckCount")
-        if deck_count is not None and deck_count <= LOW_DECK:  # 不能寫 (deckCount or 99)：0 張會被當成 99（Codex 審查抓到）
+        # 只擋抽牌／找牌的特性；Munkidori 移傷害不碰牌庫（Codex 敗局分析 388f3888 T21：牌庫 7 張時沒移傷，
+        # 被 250 打倒；高手 4 比 0）
+        draws = card_info(board.option_card_id(option)).get("name") not in COUNTER_MOVERS
+        if draws and deck_count is not None and deck_count <= LOW_DECK:  # 不能寫 (deckCount or 99)：0 張會被當成 99（Codex 審查抓到）
             return 5
         return SCORE["ability"]
 
