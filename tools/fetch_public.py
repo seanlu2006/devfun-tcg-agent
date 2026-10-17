@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""下載 dev.fun Arena 的公開資料：卡牌目錄、招式目錄、最近對戰與每一步的決策紀錄。
+"""下載 dev.fun Arena 的公開資料：卡牌目錄、招式目錄、對戰與每一步的決策紀錄。
 
 只呼叫不需要登入的公開端點。結果存在 data/raw/（不進 git）。
-用法：python3 tools/fetch_public.py [場數，預設 20]
+公開的對戰清單只給「最近 20 場」、沒有下一頁，所以要更多場就按 agent 抓：
+先讀排行榜前 N 名，再用 agentId 篩選各自的對戰（這些也剛好是高分玩家的對戰）。
+用法：python3 tools/fetch_public.py [總場數上限，預設 20] [排行榜前幾名，預設 0＝只抓最近 20 場]
 """
 import json
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -33,25 +36,40 @@ def save(name, data):
     (RAW / name).write_text(json.dumps(data, ensure_ascii=False))
 
 
-def main():
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 20
-    MATCH_DIR.mkdir(parents=True, exist_ok=True)
-
-    save("cards.json", get_json(f"/tcg/cards?competitionId={COMPETITION_ID}"))
-    save("attacks.json", get_json("/tcg/attacks"))
-
-    # 分頁往回抓已結束的對戰清單
+def list_matches(agent_id=None, limit=50):
+    """分頁抓已結束的對戰；agent_id 給了就只抓那位 agent 的。"""
     matches, cursor = [], None
     while len(matches) < limit:
-        path = f"/tcg/matches?competitionId={COMPETITION_ID}&limit=20"
+        path = f"/tcg/matches?competitionId={COMPETITION_ID}&limit=50"
+        if agent_id:
+            path += f"&agentId={agent_id}"
         if cursor:
-            path += f"&cursor={cursor}"
+            path += f"&cursor={urllib.parse.quote(cursor)}"
         page = get_json(path)
         matches += [m for m in page["matches"] if m["status"] == "Settled"]
         cursor = page.get("nextCursor")
         if not cursor:
             break
-    matches = matches[:limit]
+    return matches[:limit]
+
+
+def main():
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 20
+    top_agents = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    MATCH_DIR.mkdir(parents=True, exist_ok=True)
+
+    save("cards.json", get_json(f"/tcg/cards?competitionId={COMPETITION_ID}"))
+    save("attacks.json", get_json("/tcg/attacks"))
+
+    matches = {m["matchId"]: m for m in list_matches(limit=limit)}
+    if top_agents:
+        board = get_json(f"/competition/leaderboard?competitionId={COMPETITION_ID}&limit={min(top_agents, 100)}")
+        save("leaderboard.json", board)
+        per_agent = max(1, limit // top_agents)
+        for row in board.get("data") or []:
+            for m in list_matches(agent_id=row["agent"]["id"], limit=per_agent):
+                matches.setdefault(m["matchId"], m)
+    matches = list(matches.values())[:limit]
     save("matches_index.json", matches)
 
     for i, m in enumerate(matches, 1):
