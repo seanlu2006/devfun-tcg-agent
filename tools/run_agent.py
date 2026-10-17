@@ -192,6 +192,7 @@ def main():
     parser.add_argument("--base", help="改連別的伺服器（例如本機模擬伺服器）")
     parser.add_argument("--state", help="改用別的狀態檔（測試用，避免動到真正的 .arena-tcg-state）")
     parser.add_argument("--credentials", help="改用別的金鑰檔（測試用）")
+    parser.add_argument("--log-dir", help="記錄檔改寫到別的資料夾（測試用，避免混進真實對戰紀錄）")
     args = parser.parse_args()
     if args.base:
         ac.BASE = args.base.rstrip("/")
@@ -199,6 +200,9 @@ def main():
         ac.STATE = Path(args.state)
     if args.credentials:
         ac.CREDENTIALS = Path(args.credentials)
+    if args.log_dir:
+        global RUN_DIR
+        RUN_DIR = Path(args.log_dir)
     runner = Runner(args)
 
     def on_sigint(signum, frame):

@@ -21,7 +21,8 @@ import mock_arena  # noqa: E402
 
 def run_agent(base, tmp, extra):
     cmd = [sys.executable, "-I", str(ROOT / "tools" / "run_agent.py"), "--base", base, "--poll", "0.05",
-           "--state", str(tmp / "state.json"), "--credentials", str(tmp / "cred.json")] + extra
+           "--state", str(tmp / "state.json"), "--credentials", str(tmp / "cred.json"),
+           "--log-dir", str(tmp / "runs")] + extra
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
 
