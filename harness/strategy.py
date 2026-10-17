@@ -556,6 +556,7 @@ def score_main_option(board, option):
         names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
         if target_name == "Drakloak" and names.count("Drakloak") == 1 and names.count(evolves_to) >= 2:
             return -1   # 等其中一隻 Dragapult ex 被打倒（剩不到 2 隻）才進化，這條就不擋了
+        # 試過「進化後會被打倒的戰鬥場改進化別隻」（Codex 建議）：高手 13 次跟舊規則、9 次跟新規則，不採用
         return SCORE["evolve"]
 
     if kind == OPT_ATTACH_ENERGY:
@@ -737,9 +738,15 @@ def score_play_card(board, option):
         if prize_value(board.hand_card_id(option.get("index", 0))) >= 2 and not EVOLVES_INTO.get(name):
             # 會送 2 張獎賞卡的配角 ex（Fezandipiti ex、Meowth ex）：不急著擺上備戰區當靶子
             # （2026-10-17 第 2 批：輸的 5 場裡這兩隻被打倒 3 次＝送對手 6 張）
-            if name == "Meowth ex" and not any(card_info(card_id_of(c)).get("cardType") == CARD_SUPPORTER
-                                               for c in board.me.get("hand") or []):
-                return SCORE["draw"]  # Meowth ex 上場可以搜支援者：手上沒支援者時才值得
+            if name == "Meowth ex":
+                hand_names = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
+                # 缺能量、這回合還沒用支援者、手上沒有 Crispin 或抽牌支援者（Boss 不算解法）→ 上場搜 Crispin 補能量
+                # （Codex 敗局分析 d9fe2e8e T9：缺火只打 Jet Headbutt，手上只有 Boss，沒放 Meowth 去搜 Crispin）
+                if (energy_starved(board) or active_color_starved(board)) and not board.current.get("supporterPlayed") \
+                        and not hand_names & (DRAW_SUPPORTERS | ENERGY_FETCH_CARDS):
+                    return SCORE["attach_needed_bench"] + 1
+                if not any(card_info(card_id_of(c)).get("cardType") == CARD_SUPPORTER for c in board.me.get("hand") or []):
+                    return SCORE["draw"]  # Meowth ex 上場可以搜支援者：手上沒支援者時才值得
             return SCORE["item"] - 5
         return SCORE["bench_basic"]
     if name in DISCARD_COST_CARDS and not can_afford_discard(board, option.get("index", 0), DISCARD_COST_CARDS[name]):
