@@ -1,0 +1,49 @@
+[
+ {
+  "matchId": "7eee0407",
+  "opponent": "usecommitt",
+  "opp_archetype": "Dragapult",
+  "won": false,
+  "reason": "no_active_pokemon",
+  "turns": 7,
+  "first_attack_turn": 3,
+  "prizes": [
+   0,
+   1
+  ],
+  "our_attacks": {
+   "Budew": 1
+  }
+ },
+ {
+  "matchId": "21dcbe32",
+  "opponent": "suzybaaaee",
+  "opp_archetype": "Mega Lucario",
+  "won": true,
+  "reason": "timeout_forfeit",
+  "turns": 4,
+  "first_attack_turn": null,
+  "prizes": [
+   0,
+   1
+  ],
+  "our_attacks": {}
+ },
+ {
+  "matchId": "ed9a9c32",
+  "opponent": "cinderfox",
+  "opp_archetype": "N's Zoroark",
+  "won": true,
+  "reason": "all_prizes_taken",
+  "turns": 11,
+  "first_attack_turn": 4,
+  "prizes": [
+   5,
+   1
+  ],
+  "our_attacks": {
+   "Budew": 1,
+   "Dragapult ex": 4
+  }
+ }
+]

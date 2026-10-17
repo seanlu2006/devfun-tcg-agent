@@ -83,7 +83,8 @@ def analyse_match(match):
 
 
 SIGNATURES = [  # 依序比對：牌組裡有這張就歸這一派
-    ("Dragapult ex", "Dragapult"), ("Alakazam", "Alakazam"), ("Kadabra", "Alakazam"),
+    ("Dragapult ex", "Dragapult"), ("Drakloak", "Dragapult"), ("Dreepy", "Dragapult"),
+    ("Alakazam", "Alakazam"), ("Kadabra", "Alakazam"),
     ("Team Rocket's Mewtwo ex", "Team Rocket"), ("Team Rocket's Spidops", "Team Rocket"),
     ("Mega Starmie ex", "Mega Starmie"), ("Mega Lucario ex", "Mega Lucario"), ("Crustle", "Crustle"),
     ("Mega Kangaskhan ex", "Mega Kangaskhan"), ("N’s Zoroark ex", "N's Zoroark"),
