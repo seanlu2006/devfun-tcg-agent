@@ -411,6 +411,25 @@ class Board:
         return any(self.power_now(m) >= max(power, 60) and (m.get("hp") or 0) > self.opp_threat(m)
                    for m in self.me.get("bench") or [])
 
+    def save_evolution_line(self):
+        """戰鬥場是還能再進化的中間型（Drakloak），下回合會被打倒、這回合又打不倒對手 →
+        撤退，換一隻不在進化線上的非 ex 配角（Budew）出來擋：送的獎賞卡一樣是 1 張，但保住找牌特性和進化線。
+        （Codex 敗局分析 8d2c126f T11、038bc37c T11：Drakloak 連能量一起被打倒）"""
+        active = self.my_active
+        card = card_info((active or {}).get("id"))
+        if not active or not card.get("stage1") or not EVOLVES_INTO.get(card.get("name")):
+            return False
+        opp = self.opp_active
+        if self.opp_threat(active) < (active.get("hp") or 0):
+            return False
+        if opp and self.max_damage_vs(opp) >= (opp.get("hp") or 0) > 0:
+            return False   # 這回合打得倒對手：先打
+        for mon in self.me.get("bench") or []:
+            info = card_info(mon.get("id"))
+            if info.get("basic") and not (info.get("ex") or info.get("megaEx")) and not EVOLVES_INTO.get(info.get("name")):
+                return True
+        return False
+
     def best_damage_now(self):
         """主要回合裡「現在合法的招式」能打出的最高估計傷害（打對手戰鬥場）。"""
         best = 0
@@ -495,7 +514,9 @@ def score_main_option(board, option):
 
     if kind == OPT_RETREAT:
         # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
-        return SCORE["retreat_ready"] if board.better_attacker_on_bench() or board.healthy_swap_available() else -10
+        if board.better_attacker_on_bench() or board.healthy_swap_available() or board.save_evolution_line():
+            return SCORE["retreat_ready"]
+        return -10
 
     if kind == OPT_END_TURN:
         return SCORE["end_turn"]
@@ -532,6 +553,20 @@ def score_attach(board, option):
     if COLORLESS in missing or energy_type is None:
         return SCORE["attach_colorless"] + bonus
     return SCORE["attach_extra"]  # 顏色不對：除非沒別的事做，不然不貼
+
+
+SPREAD_BLOCKING_STADIUMS = {"Battle Cage"}   # 擋掉「放到備戰區的傷害指示物」的競技場
+
+
+def opp_stadium_blocks_spread(board):
+    """場上是對手放的、會擋 Phantom Dive 備戰區指示物的競技場，而我們的戰鬥場有放指示物的招式。"""
+    stadium = (board.current.get("stadium") or [None])[0]
+    if not stadium or card_info(card_id_of(stadium)).get("name") not in SPREAD_BLOCKING_STADIUMS:
+        return False
+    if isinstance(stadium, dict) and stadium.get("playerIndex") == board.my_index:
+        return False
+    active = board.my_active or {}
+    return any(bench_spread(a) for a in card_info(active.get("id")).get("attacks") or [])
 
 
 EVOLUTION_SEARCH_CARDS = {"Ultra Ball", "Poké Pad"}   # 能搜進化卡的（Poké Pad 不能搜規則寶可夢＝ex）
@@ -619,6 +654,22 @@ def score_play_card(board, option):
         if any(m and m.get("energies") for m in (board.opp.get("active") or []) + (board.opp.get("bench") or [])):
             return SCORE["attack_ko"] + 8
         return -1
+    if name == "Judge":
+        # 雙方洗手牌、各抽 4：自己手上能用的牌少時，它就是抽牌支援者（Codex 敗局分析 f4a8c816、8d2c126f：
+        # 手上只剩用不到的牌，Judge 被當干擾卡固定 30 分，一直沒出）
+        if len(board.me.get("hand") or []) <= 4:
+            return SCORE["draw"] + 6 if energy_starved(board) else SCORE["draw"]
+        return SCORE["item"]
+    if name == "Unfair Stamp":
+        # 合法（上回合有寶可夢被打倒）時：對手手牌壓到 2 張、自己抽 5 張；攻擊會結束回合，所以攻擊前先出
+        # （Codex 敗局分析 d62eedec：對手 9、11 張手牌時都沒出）
+        if (board.opp.get("handCount") or 0) > 3:
+            return SCORE["attack_ko"] + 9
+        return SCORE["item"]
+    if card_type == CARD_STADIUM and opp_stadium_blocks_spread(board):
+        # 對手的 Battle Cage 會擋掉 Phantom Dive 放到備戰區的指示物 → 先用自己的競技場蓋掉
+        # （Codex 敗局分析 db338914：三個回合的指示物都被擋，手上有 Jamming Tower 卻沒出）
+        return SCORE["attack_ko"] + 9
     if name in DISRUPTION_CARDS:
         return SCORE["item"]  # 干擾對手（拆能量、洗手牌）：自己佈局好了再說
     if name in ENERGY_FETCH_CARDS:
@@ -882,6 +933,12 @@ def want_value(board, card_id, in_hand=False):
             return 70 if board.bench_space() > 0 else 20       # 進化線的起點
         return 50 if board.bench_space() > 0 else 15
     if card.get("cardType") in (CARD_BASIC_ENERGY, CARD_SPECIAL_ENERGY):
+        active = board.my_active
+        if active and not board.current.get("energyAttached") and not in_hand \
+                and missing_energy(active.get("energies"), plan_cost(active.get("id"))) == [card.get("energyType")] \
+                and card.get("energyType") not in hand_energy_types(board):
+            # 拿了這回合就能貼上、湊齊戰鬥場的計畫招式（Codex 敗局分析 f4a8c816：Night Stretcher 撿 Dreepy 不撿超能量；高手 6 比 1）
+            return 92
         return 60 if card.get("energyType") in needed_colors(board) else 25
     if card.get("cardType") == CARD_SUPPORTER:
         if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):

@@ -99,6 +99,8 @@ def synthetic_cases(strategy):
         ("競技場 Lumiose City 的特性會結束回合：先貼能量", lumiose_case(strategy), "[1]"),
         ("惡能量：貼給還沒有惡能量的 Munkidori（特性要用），不貼 Fezandipiti ex", munkidori_case(strategy), "[1]"),
         ("前排 Dragapult ex 剩 80 HP 會被打倒、後排有滿血備好的：先撤退換人", healthy_swap_case(strategy), "[0]"),
+        ("瀕死的 Drakloak、這回合打不倒對手、備戰區有 Budew：撤退保住進化線", save_line_case(strategy), "[0]"),
+        ("對手 9 張手牌、Unfair Stamp 合法：攻擊前先出", stamp_case(strategy), "[0]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -271,6 +273,34 @@ def healthy_swap_case(strategy):
     players = [{"active": [hurt], "bench": [fresh], "benchMax": 5, "hand": [], "deckCount": 20},
                {"active": [opp], "bench": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "benchMax": 5}]
     options = [{"type": 12}, {"type": 13, "attackId": atk["Phantom Dive"]}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
+
+
+def save_line_case(strategy):
+    """選項 [0] 撤退、[1] Dragon Headbutt、[2] 結束；對手戰鬥場 Dragapult ex（火＋超，打得倒 90 HP 的 Drakloak）。"""
+    ids = _ids(strategy)
+    drak = next(a for a in strategy.card_info(ids["Drakloak"])["attacks"])
+    players = [{"active": [{"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": [2, 7]}],
+                "bench": [{"id": ids["Budew"], "hp": 30, "maxHp": 30, "energies": []}],
+                "benchMax": 5, "hand": [], "deckCount": 20},
+               {"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}], "bench": [], "benchMax": 5}]
+    options = [{"type": 12}, {"type": 13, "attackId": drak}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
+
+
+def stamp_case(strategy):
+    """選項 [0] 出 Unfair Stamp、[1] Phantom Dive（打不倒）、[2] 結束。"""
+    ids = _ids(strategy)
+    atk = {strategy.attack_info(a)["name"]: a for a in strategy.card_info(ids["Dragapult ex"])["attacks"]}
+    players = [{"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}], "bench": [],
+                "benchMax": 5, "hand": [{"id": ids["Unfair Stamp"]}], "deckCount": 20},
+               {"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": []}], "bench": [],
+                "benchMax": 5, "handCount": 9}]
+    options = [{"type": 7, "index": 0}, {"type": 13, "attackId": atk["Phantom Dive"]}, {"type": 14}]
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
