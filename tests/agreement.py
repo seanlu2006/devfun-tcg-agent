@@ -7,7 +7,10 @@
 贏家的選擇也不一定是最好的——這個分數是方向感，不是勝率。
 
 用法：python3 tests/agreement.py            （改完 strategy.py 跑一次，看哪一類變好、變差）
+      python3 tests/agreement.py --handles StartupBros,godam,keris,clairenuttall
+          → 改成拿「這幾位玩家」的每一步當參考答案（不論輸贏），例如只看同牌組的高手
 """
+import argparse
 import importlib.util
 import json
 from collections import Counter, defaultdict
@@ -32,7 +35,21 @@ def load_strategy():
     return module
 
 
+def expert_ids(handles):
+    board = json.loads((ROOT / "data" / "raw" / "leaderboard.json").read_text())["data"]
+    wanted = {h.strip() for h in handles.split(",") if h.strip()}
+    ids = {r["agent"]["id"] for r in board if r["agent"]["handle"] in wanted}
+    if len(ids) != len(wanted):
+        found = {r["agent"]["handle"] for r in board if r["agent"]["id"] in ids}
+        raise SystemExit(f"排行榜裡找不到：{sorted(wanted - found)}")
+    return ids
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--handles", help="只拿這些玩家的決定當參考答案（逗號分隔）")
+    args = parser.parse_args()
+    experts = expert_ids(args.handles) if args.handles else None
     strategy = load_strategy()
     ours, first = defaultdict(Counter), defaultdict(Counter)  # 類別 → Counter(hit/total)
     main_confusion = defaultdict(Counter)  # 贏家選的種類 → 我們選的種類
@@ -40,31 +57,40 @@ def main():
     for path in sorted(MATCH_DIR.glob("*.json")):
         match = json.loads(path.read_text())
         winner = (match["battle"].get("result") or {}).get("winnerAgentId")
-        expert = {a["seq"]: a["action"] for a in match["battle"]["actions"] if a.get("agentId") == winner}
-        for dp in match["decisions"]["decisionPoints"]:
-            player = dp["perPlayer"].get(winner) or {}
-            legal = player.get("legalActions") or []
-            answer = expert.get(dp["seq"])
-            if not legal or answer is None or answer not in legal:
-                continue
-            obs = player["obs"]
-            sel = obs.get("select") or {}
-            board = strategy.Board(obs)
-            if sel.get("type") == strategy.SELECT_MAIN:
-                opt = strategy.single_pick(board, answer)
-                category = "主要回合／" + MAIN_LABELS.get(opt.get("type") if opt else None, "其他")
-            else:
-                key = (sel.get("type"), sel.get("context"))
-                category = "題目／" + CONTEXT_LABELS.get(key, f"其他 {key}")
+        targets = [p["agentId"] for p in match["battle"]["players"] if p["agentId"] in experts] if experts else [winner]
+        for target in targets:
+            score_player(strategy, match, target, ours, first, main_confusion)
 
-            mine = strategy.act({"observation": obs, "legalActions": legal})
-            ours[category]["total"] += 1
-            ours[category]["hit"] += mine == answer
-            first[category]["hit"] += legal[0] == answer
-            if sel.get("type") == strategy.SELECT_MAIN:
-                my_opt = strategy.single_pick(board, mine)
-                main_confusion[category][MAIN_LABELS.get(my_opt.get("type") if my_opt else None, "其他")] += 1
+    report(ours, first, main_confusion)
 
+
+def score_player(strategy, match, target, ours, first, main_confusion):
+    expert = {a["seq"]: a["action"] for a in match["battle"]["actions"] if a.get("agentId") == target}
+    for dp in match["decisions"]["decisionPoints"]:
+        player = dp["perPlayer"].get(target) or {}
+        legal = player.get("legalActions") or []
+        answer = expert.get(dp["seq"])
+        if not legal or answer is None or answer not in legal:
+            continue
+        obs = player["obs"]
+        sel = obs.get("select") or {}
+        board = strategy.Board(obs)
+        if sel.get("type") == strategy.SELECT_MAIN:
+            opt = strategy.single_pick(board, answer)
+            category = "主要回合／" + MAIN_LABELS.get(opt.get("type") if opt else None, "其他")
+        else:
+            key = (sel.get("type"), sel.get("context"))
+            category = "題目／" + CONTEXT_LABELS.get(key, f"其他 {key}")
+
+        mine = strategy.act({"observation": obs, "legalActions": legal})
+        ours[category]["total"] += 1
+        ours[category]["hit"] += mine == answer
+        first[category]["hit"] += legal[0] == answer
+        if sel.get("type") == strategy.SELECT_MAIN:
+            my_opt = strategy.single_pick(board, mine)
+            main_confusion[category][MAIN_LABELS.get(my_opt.get("type") if my_opt else None, "其他")] += 1
+
+def report(ours, first, main_confusion):
     def pct(hit, total):
         return f"{hit / total:6.1%}" if total else "   —  "
 
