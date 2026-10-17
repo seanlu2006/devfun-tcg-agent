@@ -1,0 +1,117 @@
+{
+ "name": "dragapult_v1",
+ "thesis": "照排行榜第 1 名 StartupBros 的 Dragapult 牌表（57 張實際數到＋3 張參考 godam/clairenuttall 補上）。Dreepy→Drakloak→Dragapult ex，貼火＋超後每回合 Phantom Dive（200＋6 個傷害指示物放對手備戰區）。Budew 第一回合鎖對手物品卡。",
+ "source": "tools/deck_profile.py + serial 計數（2026-10-17）",
+ "cards": [
+  {
+   "id": 119,
+   "count": 4,
+   "name": "Dreepy"
+  },
+  {
+   "id": 120,
+   "count": 4,
+   "name": "Drakloak"
+  },
+  {
+   "id": 121,
+   "count": 3,
+   "name": "Dragapult ex"
+  },
+  {
+   "id": 112,
+   "count": 2,
+   "name": "Munkidori"
+  },
+  {
+   "id": 235,
+   "count": 2,
+   "name": "Budew"
+  },
+  {
+   "id": 1071,
+   "count": 1,
+   "name": "Meowth ex"
+  },
+  {
+   "id": 140,
+   "count": 1,
+   "name": "Fezandipiti ex"
+  },
+  {
+   "id": 1120,
+   "count": 4,
+   "name": "Crushing Hammer"
+  },
+  {
+   "id": 1227,
+   "count": 4,
+   "name": "Lillie's Determination"
+  },
+  {
+   "id": 1121,
+   "count": 4,
+   "name": "Ultra Ball"
+  },
+  {
+   "id": 1152,
+   "count": 4,
+   "name": "Poké Pad"
+  },
+  {
+   "id": 1086,
+   "count": 4,
+   "name": "Buddy-Buddy Poffin"
+  },
+  {
+   "id": 1182,
+   "count": 3,
+   "name": "Boss’s Orders"
+  },
+  {
+   "id": 1246,
+   "count": 2,
+   "name": "Jamming Tower"
+  },
+  {
+   "id": 1198,
+   "count": 2,
+   "name": "Crispin"
+  },
+  {
+   "id": 1097,
+   "count": 3,
+   "name": "Night Stretcher"
+  },
+  {
+   "id": 1080,
+   "count": 1,
+   "name": "Unfair Stamp"
+  },
+  {
+   "id": 1213,
+   "count": 1,
+   "name": "Judge"
+  },
+  {
+   "id": 1231,
+   "count": 1,
+   "name": "Dawn"
+  },
+  {
+   "id": 2,
+   "count": 4,
+   "name": "Basic {R} Energy"
+  },
+  {
+   "id": 5,
+   "count": 4,
+   "name": "Basic {P} Energy"
+  },
+  {
+   "id": 7,
+   "count": 2,
+   "name": "Basic {D} Energy"
+  }
+ ]
+}
