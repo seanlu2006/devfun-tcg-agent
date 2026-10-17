@@ -92,6 +92,8 @@ def synthetic_cases(strategy):
         ("Drakloak 看到 Lillie's 和超能量、Dragapult ex 只缺超：拿超能量（looking 區）", codex_case(strategy, "looking"), "[1]"),
         ("Drakloak 還能用特性：先用特性再進化", codex_case(strategy, "evolve"), "[1]"),
         ("備戰區沒人：不用 Tuck Tail（會變成場上沒寶可夢判輸）", codex_case(strategy, "tuck"), "[1]"),
+        ("Ultra Ball 丟 2 張、手上兩張 Dragapult ex（場上還沒 Drakloak）：不能兩張都丟，也不丟光支援者",
+         discard_case(strategy), "[0,2]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -178,6 +180,25 @@ def codex_case(strategy, kind):
     current["players"] = [me, opp]
     return {"observation": {"current": current, "select": select},
             "legalActions": [f"[{i}]" for i in range(len(select["option"]))]}
+
+
+def discard_case(strategy):
+    """Codex 敗局分析 ca4848f4：手牌 Dragapult ex×2、Dawn、Poké Pad、Lillie's、Boss's，丟 2 張。
+    舊版丟 Dawn＋Lillie's（逐張算分）；改成組合計分後：丟一張 Dragapult ex＋一張支援者，保留另一張 Dragapult ex。"""
+    ids = {}
+    for k, v in strategy.CARDS.items():
+        ids.setdefault(v["name"].replace("’", "'"), k)
+    hand = [{"id": ids[n]} for n in ("Dragapult ex", "Dragapult ex", "Dawn", "Poké Pad", "Lillie's Determination",
+                                      "Boss's Orders")]
+    players = [{"active": [{"id": ids["Munkidori"], "hp": 80, "maxHp": 110, "energies": []}],
+                "bench": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": [], "appearThisTurn": True}],
+                "benchMax": 5, "hand": hand, "deckCount": 30},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"area": 2, "type": 3, "index": i} for i in range(len(hand))]
+    legal = [f"[{a},{b}]" for a in range(len(hand)) for b in range(a + 1, len(hand))]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 2},
+           "select": {"type": 1, "context": 8, "minCount": 2, "maxCount": 2, "option": options}}
+    return {"observation": obs, "legalActions": legal}
 
 
 def iter_decision_points():

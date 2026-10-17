@@ -676,6 +676,8 @@ def pick_counter_target(board, legal):
         if hp <= 0:
             continue  # 已經 0 HP（等著被打倒）的不用再放
         hurt = hp < ((mon or {}).get("maxHp") or hp)
+        # 試過 Codex 建議的「先放到下一擊打得倒的門檻」（2026-10-18）：和高手選法不同的 89 次裡，
+        # 高手 73 次照舊規則（集中放已受傷的），只有 10 次照新規則 → 不採用
         if hp <= remain:
             key = (1, prize_value(mon.get("id")), hp, hurt, 0)
         else:
@@ -804,7 +806,24 @@ def keep_value(board, card_id):
         value = max(value, 45)
     elif card.get("cardType") == CARD_ITEM and hand_count(board, card.get("name")) >= 2:
         value -= 15
+    elif card.get("cardType") == CARD_POKEMON and hand_count(board, card.get("name")) >= 2 and value < 90:
+        value -= 15   # 這回合用不到的重複寶可夢（例：場上還沒有 Drakloak 時的第二張 Dragapult ex）
     return value
+
+
+ALL_COPIES_PENALTY = 25
+
+
+def discard_penalty(board, picked_ids):
+    """丟牌組合的額外代價：把手上同名寶可夢「全部」丟光（Codex 敗局分析 ca4848f4：兩張 Dragapult ex
+    逐張看都便宜，但不能兩張都丟，不然進化線斷掉）。"""
+    penalty = 0
+    for name in {card_info(c).get("name") for c in picked_ids}:
+        copies = hand_count(board, name)
+        if copies >= 2 and card_info(next(c for c in picked_ids if card_info(c).get("name") == name)).get(
+                "cardType") == CARD_POKEMON and sum(1 for c in picked_ids if card_info(c).get("name") == name) >= copies:
+            penalty += ALL_COPIES_PENALTY
+    return penalty
 
 
 def can_afford_discard(board, hand_index, n):
@@ -839,7 +858,8 @@ def pick_cards(board, legal, value_fn, prefer):
         if prefer == "high":
             key = (sum(values), len(values))
         else:
-            key = (-sum(values), -len(values))
+            ids = [board.option_card_id(board.options[i]) for i in picks]
+            key = (-(sum(values) + discard_penalty(board, [c for c in ids if c])), -len(values))
         if best_key is None or key > best_key:
             best, best_key = action, key
     if best is None:
