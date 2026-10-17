@@ -21,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STRATEGY = ROOT / "harness" / "strategy.py"
 MATCH_DIR = ROOT / "data" / "raw" / "matches"
+FIXTURE_DIR = ROOT / "tests" / "fixtures"  # 沒下載公開資料時改用這份固定資料（乾淨 checkout 也能跑）
 SANDBOX_PYTHON = (3, 11)
 
 
@@ -106,7 +107,8 @@ def crustle_case(strategy, drakloak_ready):
 
 
 def iter_decision_points():
-    for path in sorted(MATCH_DIR.glob("*.json")):
+    paths = sorted(MATCH_DIR.glob("*.json")) or sorted(FIXTURE_DIR.glob("*.json"))
+    for path in paths:
         data = json.loads(path.read_text())
         for dp in data["decisions"]["decisionPoints"]:
             for player in dp["perPlayer"].values():

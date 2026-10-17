@@ -335,6 +335,17 @@ class Board:
                            else (atk.get("damage") or 0))
         return best
 
+    def max_damage_vs(self, defender):
+        """我方戰鬥場「現在付得起」的招式打 defender 的最高估計傷害（不在主要回合也能算）。"""
+        attacker = self.my_active
+        if not attacker or not defender:
+            return 0
+        best = 0
+        for attack_id in card_info(attacker.get("id")).get("attacks") or []:
+            if not missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
+                best = max(best, self.damage_against(attack_id, attacker, defender))
+        return best
+
     def better_attacker_on_bench(self):
         """備戰區有沒有一隻「現在就能打、而且明顯比戰鬥場那隻強」的（至少 60，且多 50 以上）。
         2026-10-17 實戰：舊規則只看「戰鬥場打不打得出招式」，Budew 的 10 點招式不用能量，
@@ -386,7 +397,8 @@ def score_main_option(board, option):
 
     if kind == OPT_ABILITY:
         # 牌庫快見底就別再用找牌／抽牌類特性（2026-10-17 實戰：3 隻 Drakloak 每回合都找牌，牌庫被抽光判輸）
-        if (board.me.get("deckCount") or 99) <= LOW_DECK:
+        deck_count = board.me.get("deckCount")
+        if deck_count is not None and deck_count <= LOW_DECK:  # 不能寫 (deckCount or 99)：0 張會被當成 99（Codex 審查抓到）
             return 5
         return SCORE["ability"]
 
@@ -582,8 +594,12 @@ def pokemon_value(board, mon, side):
         atk = best_attack(mon.get("id"))
         return (energies, 1 if board.can_attack_now(mon) else 0, atk[1] if atk else 0)
     if board.select.get("context") == CTX_SWITCH:
-        # Boss's Orders：把對手拉上來是為了打倒拿獎賞卡 → 獎賞卡多的優先（這題用舊規則一致率較高：72% vs 61%）
-        return (prize_value(mon.get("id")), -(mon.get("hp") or 0), energies)
+        # Boss's Orders：拉上來是為了打倒拿獎賞卡 →「打得倒的」先，其中獎賞卡多的優先，再來 HP 低的。
+        # 一定要先看打不打得倒：出 Boss 的理由就是「有打得倒的目標」，選目標時要用同一個條件
+        # （Codex 審查抓到：舊規則只看獎賞卡，會拉 320 HP 打不倒的 Dragapult ex，放過 60 HP 的 Dreepy）
+        hp = mon.get("hp") or 0
+        killable = 0 < hp <= board.max_damage_vs(mon)
+        return (1 if killable else 0, prize_value(mon.get("id")), -hp, energies)
     return (-(mon.get("hp") or 0), energies, 0)
 
 

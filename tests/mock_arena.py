@@ -5,6 +5,7 @@
 刻意安排的情境：
   - 每次加入都要帶牌組（沒帶 → 422，跟真伺服器一樣）；牌組鎖定後帶不同牌組 → 409 payload_locked
   - 每隔幾次詢問就回「輪到對手」（pending 空、activeMatches 有東西）
+  - 故障注入：第 4 次詢問回 500、第 5 個動作請求直接斷線（測重試與冪等重送）
   - 單數場在「我們這一步」結束（action 回 Settled）；雙數場在「對手那一步」結束（我們收不到結束回應）
 """
 import json
@@ -15,12 +16,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 MATCH_DIR = Path(__file__).resolve().parent.parent / "data" / "raw" / "matches"
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 DECISIONS_PER_MATCH = 25  # 每場只取前 25 個決策點，測試跑得快
 
 
 def load_script():
     """從一場公開對戰取出「贏家」那一方的決策點序列。"""
-    path = sorted(MATCH_DIR.glob("*.json"))[0]
+    path = (sorted(MATCH_DIR.glob("*.json")) or sorted(FIXTURE_DIR.glob("*.json")))[0]
     match = json.loads(path.read_text())
     winner = match["battle"]["result"]["winnerAgentId"]
     script = []
@@ -64,6 +66,9 @@ class MockArena:
         return 200, {"status": "matched", "matchId": match_id}
 
     def pending(self):
+        self.polls = getattr(self, "polls", 0) + 1
+        if self.polls == 4:  # 注入：詢問時回一次 500
+            return None
         cur = self.current
         if not cur or self.status[cur["id"]] != "Active":
             return {"pending": [], "activeMatches": []}
@@ -114,7 +119,8 @@ def make_handler(arena):
             path = urlparse(self.path).path
             with arena.lock:
                 if path.endswith("/tcg/pending-actions"):
-                    return self.reply(200, arena.pending())
+                    data = arena.pending()
+                    return self.reply(500, {"error": "internal"}) if data is None else self.reply(200, data)
                 if "/tcg/battle/" in path:
                     match_id = path.rsplit("/", 1)[-1]
                     return self.reply(200, {"matchId": match_id, "status": arena.status.get(match_id, "Unknown")})
@@ -129,6 +135,10 @@ def make_handler(arena):
                 if path.endswith("/tcg/join"):
                     return self.reply(*arena.join(body))
                 if path.endswith("/tcg/action"):
+                    arena.action_requests = getattr(arena, "action_requests", 0) + 1
+                    if arena.action_requests == 5:  # 注入：第 5 個動作請求直接斷線、不回應（模擬網路中斷）
+                        self.close_connection = True
+                        return
                     return self.reply(*arena.action(body))
             self.reply(404, {"error": "not found"})
 

@@ -76,6 +76,7 @@ def main():
         theirs = prof.get(opp_id) or {}
         rows.append({
             "matchId": m["matchId"][:8],
+            "version": ((m.get("version") or {}).get("git")) or "（舊紀錄，沒記版本）",
             "opponent": next((p["handle"] for p in battle["players"] if p["agentId"] == opp_id), "?"),
             "opp_archetype": archetype(theirs.get("attacker") or Counter(), theirs.get("cards") or ()),
             "won": result.get("winnerAgentId") == me,
@@ -96,6 +97,12 @@ def main():
         print(f"{r['matchId']:<9}{r['opponent'][:15]:<16}{r['opp_archetype'][:13]:<14}{'勝' if r['won'] else '敗':<4}"
               f"{str(r['reason'])[:19]:<20}{str(r['turns']):>4}{str(r['first_attack_turn']):>5}  "
               f"{str(r['prizes'][0])}/{str(r['prizes'][1]):<12}{r['our_attacks']}")
+    print("\n按策略版本（扣掉對手超時／投降）：")
+    for version in dict.fromkeys(r["version"] for r in rows):
+        vr = [r for r in rows if r["version"] == version and r["reason"] not in ("timeout_forfeit", "forfeit")]
+        if vr:
+            print(f"  {version}：{sum(r['won'] for r in vr)}/{len(vr)}（{sum(r['won'] for r in vr) / len(vr):.0%}）"
+                  + ("　樣本不足（< 20 場），只能看方向" if len(vr) < 20 else ""))
     by_arch = Counter((r["opp_archetype"], r["won"]) for r in rows)
     print("\n對各流派：" + "｜".join(f"{a} {by_arch[(a, True)]}勝{by_arch[(a, False)]}敗"
                                 for a in sorted({r['opp_archetype'] for r in rows})))

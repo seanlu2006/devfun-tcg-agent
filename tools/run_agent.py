@@ -14,7 +14,9 @@ TCG Playground S3 是 owner-hosted（executionMode＝remote），不是上傳 bu
   python3 tools/run_agent.py --base http://127.0.0.1:8765/api/arena ...  連本機模擬伺服器（tests/mock_arena.py）
 """
 import argparse
+import hashlib
 import importlib.util
+import subprocess
 import json
 import signal
 import sys
@@ -32,11 +34,30 @@ STOP_ERRORS = {"engine_match_allowance_exhausted", "competition_closed"}
 TRANSIENT_ERRORS = {"arena_transaction_busy", "engine_submission_version_busy"}
 
 
+def version_info(deck):
+    """這次執行用的版本：git commit、策略檔雜湊、牌組雜湊。每場都記下來，檢討時才能按版本分組
+    （Codex 審查：以前多個版本的對戰混在一起，分不出哪個修正有效）。"""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True,
+                             text=True, timeout=10).stdout.strip() or "unknown"
+        dirty = subprocess.run(["git", "status", "--porcelain", "harness/strategy.py"], cwd=ROOT,
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        sha, dirty = "unknown", ""
+    strategy_hash = hashlib.sha256((ROOT / "harness" / "strategy.py").read_bytes()).hexdigest()[:10]
+    deck_hash = hashlib.sha256(json.dumps(deck or []).encode()).hexdigest()[:10]
+    return {"git": sha + ("+未commit" if dirty else ""), "strategy": strategy_hash, "deck": deck_hash}
+
+
 def load_strategy():
     spec = importlib.util.spec_from_file_location("strategy", ROOT / "harness" / "strategy.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def is_transient(status, code):
+    return status == 0 or status >= 500 or code in TRANSIENT_ERRORS
 
 
 class Runner:
@@ -51,6 +72,7 @@ class Runner:
         RUN_DIR.mkdir(parents=True, exist_ok=True)
         self.log_path = RUN_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
         self.obs_path = self.log_path.with_name(self.log_path.stem + "_obs.jsonl")
+        self.version = version_info(self.state.get("deck"))
 
     def log(self, **event):
         event["t"] = time.strftime("%H:%M:%S")
@@ -74,14 +96,17 @@ class Runner:
             if errors:
                 sys.exit("牌組不合法：" + "；".join(errors))
             body["joinPayload"] = expand(deck)
-        for attempt in range(6):
+        for attempt in range(12):
             status, data = self.call("POST", "/tcg/join", body)
             code = data.get("error") or data.get("code")
-            # 暫時性錯誤（2026-10-17 實測：409 arena_transaction_busy「資料庫忙碌，稍後重試」）→ 等一下再試
-            if code in TRANSIENT_ERRORS or status >= 500:
-                time.sleep(2 * (attempt + 1))
+            # 暫時性錯誤：409 arena_transaction_busy（資料庫忙碌）、5xx、斷線／逾時（status 0）→ 等一下再試
+            if is_transient(status, code):
+                time.sleep(min(2 * (attempt + 1), 15))
                 continue
             break
+        if is_transient(status, code):
+            print(f"加入一直失敗（{data}），先停下來；網路恢復後重新執行即可")
+            return False
 
         if status == 409 and code == "payload_locked":
             self.state["deck_locked"] = True       # 之前已經鎖定了：不帶牌組再加入一次
@@ -98,7 +123,7 @@ class Runner:
             ac.save_state(self.state)
             print(f"已用牌組 {Path(self.args.deck).stem} 加入，這一季的牌組已鎖定。")
         print(f"加入：{data.get('status')}" + (f"，對戰 {data.get('matchId')}" if data.get("matchId") else "，排隊中…"))
-        self.log(event="join", status=data.get("status"), matchId=data.get("matchId"))
+        self.log(event="join", status=data.get("status"), matchId=data.get("matchId"), version=self.version)
         return True
 
     # ---------------------------------------------------------------- 回答一個決策點
@@ -111,12 +136,10 @@ class Runner:
             action = self.strategy.safe_default(legal)
         else:
             action = self.strategy.act(context)
-        status, data = self.call("POST", "/tcg/action",
-                                 {"matchId": pending["matchId"], "seq": pending["seq"], "action": action})
+        status, data = self.post_action(pending, action)
         if status == 422:  # 不合法：重讀這個決策點、送保底動作一次
             action = self.strategy.safe_default(legal)
-            status, data = self.call("POST", "/tcg/action",
-                                     {"matchId": pending["matchId"], "seq": pending["seq"], "action": action})
+            status, data = self.post_action(pending, action)
         select = (context["observation"].get("select") or {})
         self.log(event="action", matchId=pending["matchId"], seq=pending["seq"], action=action,
                  select=[select.get("type"), select.get("context")], legal=len(legal),
@@ -127,9 +150,24 @@ class Runner:
                                 "legalActions": legal, "obs": context["observation"]}, ensure_ascii=False) + "\n")
         return data.get("matchStatus")
 
+    def post_action(self, pending, action):
+        """送出動作；遇到暫時性錯誤就用「同一個 (matchId, seq, action)」重送（伺服器對同一組是冪等的），
+        但不能拖過截止時間。"""
+        body = {"matchId": pending["matchId"], "seq": pending["seq"], "action": action}
+        for attempt in range(4):
+            status, data = self.call("POST", "/tcg/action", body)
+            if not is_transient(status, data.get("error") or data.get("code")):
+                return status, data
+            deadline = pending.get("deadline") or 0
+            if deadline and deadline - time.time() * 1000 < 1000:
+                break
+            time.sleep(0.5 * (attempt + 1))
+        return status, data
+
     def finish_match(self, match_id, match_status):
         self.matches_done += 1
-        self.state["matches"].append({"matchId": match_id, "status": match_status, "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        self.state["matches"].append({"matchId": match_id, "status": match_status,
+                                      "at": time.strftime("%Y-%m-%d %H:%M:%S"), "version": self.version})
         ac.save_state(self.state)
         print(f"第 {self.matches_done} 場結束（{match_status}）：{match_id}")
         self.log(event="match_end", matchId=match_id, status=match_status)
@@ -149,7 +187,7 @@ class Runner:
         last_join = time.time()
         while True:
             status, data = self.call("GET", f"/tcg/pending-actions?competitionId={ac.COMPETITION_ID}")
-            if status >= 300:
+            if status == 0 or status >= 300:
                 print(f"  詢問失敗（HTTP {status}）：{data}，2 秒後重試")
                 time.sleep(2)
                 continue
@@ -213,7 +251,7 @@ def main():
         print("\n收到 Ctrl-C：打完這一場就停（再按一次會立刻離開）")
     signal.signal(signal.SIGINT, on_sigint)
 
-    print(f"記錄檔：{runner.log_path}")
+    print(f"記錄檔：{runner.log_path}｜版本 {runner.version}")
     runner.run()
 
 

@@ -51,6 +51,9 @@ def request(method, path, body=None, key=None, content_type="application/json"):
             return err.code, json.loads(text)
         except ValueError:
             return err.code, {"raw": text}
+    except (urllib.error.URLError, TimeoutError, OSError) as err:
+        # 斷線、DNS 失敗、逾時：回傳 status 0，呼叫端當成暫時性錯誤重試（Codex 審查：以前會直接讓執行器結束）
+        return 0, {"error": "network_error", "message": str(err)}
 
 
 def load_credentials():
