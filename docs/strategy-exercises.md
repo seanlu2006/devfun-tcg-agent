@@ -51,7 +51,14 @@ v1 的做法（`score_main_option` 的 `OPT_ATTACK` 分支＋`Board.damage_again
 | 能量看「進化後的招式」要什麼顏色 | `score_attach`、`plan_cost` | 25% → 27～32% |
 | 戰鬥場打不出、備戰區有人準備好 → 撤退／Switch | `score_main_option`、`score_play_card` | 0% → 49% |
 | Boss's Orders 只在「拉上來就打得倒」時出 | `score_play_card` | — |
-| 挑誰上場：自己的挑能打的；對手的挑打得倒、獎賞卡多的 | `pick_pokemon` | 51% → 76% |
+| 挑誰上場：自己的挑能量多、能打的 | `pokemon_value` | 51% → 79% |
+| 選對手目標：HP 最低、身上能量多（Boss's Orders 例外：獎賞卡多的優先） | `pokemon_value` | 32% → 65% |
+| Phantom Dive 打不倒時：先放已經受傷的，再挑 HP 低的 | `pick_counter_target` | 69% → 73% |
+
+### 怎麼驗證的（2026-10-17 第二輪）
+沒有遊戲引擎，不能自己跟自己打，所以改用「高手對戰切成訓練組 70%／驗收組 30%」：每條新規則都要**驗收組也進步**才採用。
+- 自動調分數表（`tools/tune_weights.py`）：驗收組只多 0.6 個百分點，在誤差範圍內 → 不採用。主要回合卡在「公開紀錄看不到手牌」。
+- 開局的是非題：前 15 名選「是」勝率 61%（30/49）、選「否」54%（15/28）→ 維持選「是」。
 
 ## 接下來的練習（Sean）
 - **練習 2：丟牌**（`keep_value`）——現在只有 22% 跟高手一樣。Ultra Ball 要丟 2 張時，該丟什麼？提示：第一次真的上場後，看 `data/runs/` 的紀錄，比賽時手牌看得到。
