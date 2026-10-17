@@ -11,6 +11,7 @@
 相容性：S3 是 owner-hosted，程式在自己的電腦上跑；仍維持 Python 3.11 語法、只用標準函式庫（之後若改成上傳 bundle 也能用）。
 """
 import json
+import re
 import os
 
 # ---------------------------------------------------------------- 代碼常數（見 docs/protocol.md）
@@ -395,8 +396,27 @@ class Board:
         best = 0
         for attack_id in card_info(attacker.get("id")).get("attacks") or []:
             if not missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
-                best = max(best, self.damage_against(attack_id, attacker, defender))
+                dmg = self.damage_against(attack_id, attacker, defender)
+                # 「雙方戰鬥寶可夢每有 1 個能量多 N 傷害」（Teal Mask Ogerpon ex 的 Myriad Leaf Shower：以前只算基礎 30，實際打 210）
+                bonus = re.search(r"(\d+) more damage for each energy attached to both active", (attack_info(attack_id).get("text") or "").lower())
+                if bonus and dmg > 0:
+                    total = len(attacker.get("energies") or []) + len((self.my_active or {}).get("energies") or [])
+                    dmg += int(bonus.group(1)) * total
+                best = max(best, dmg)
         return best
+
+    def losing_swap_available(self):
+        """戰鬥場被打倒就輸（對手剩下的獎賞卡 ≤ 它值的張數）、這回合又打不倒對手 →
+        換一隻「挨得住、還能打 60 以上」的上來，就算火力比較弱（Codex 敗局分析 ff63b361 T15）。"""
+        active = self.my_active
+        if not active or self.opp_threat(active) < (active.get("hp") or 0):
+            return False
+        if len(self.opp.get("prize") or []) > prize_value(active.get("id")):
+            return False
+        opp = self.opp_active
+        if opp and self.max_damage_vs(opp) >= (opp.get("hp") or 0) > 0:
+            return False
+        return any(self.power_now(m) >= 60 and (m.get("hp") or 0) > self.opp_threat(m) for m in self.me.get("bench") or [])
 
     def healthy_swap_available(self):
         """戰鬥場那隻下回合會被打倒，備戰區有一隻「現在戰力不輸它、而且挨得住」的 → 撤退換牠上來。
@@ -417,7 +437,10 @@ class Board:
         （Codex 敗局分析 8d2c126f T11、038bc37c T11：Drakloak 連能量一起被打倒）"""
         active = self.my_active
         card = card_info((active or {}).get("id"))
-        if not active or not card.get("stage1") or not EVOLVES_INTO.get(card.get("name")):
+        mid_line = card.get("stage1") and EVOLVES_INTO.get(card.get("name"))
+        # 也包括「打不出像樣傷害的 ex」：被打倒送 2 張，換 Budew 上去只送 1 張（Codex 敗局分析 66a66af0 T6：Meowth ex）
+        weak_ex = (card.get("ex") or card.get("megaEx")) and self.power_now(active) < 60
+        if not active or not (mid_line or weak_ex):
             return False
         opp = self.opp_active
         if self.opp_threat(active) < (active.get("hp") or 0):
@@ -514,7 +537,8 @@ def score_main_option(board, option):
 
     if kind == OPT_RETREAT:
         # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
-        if board.better_attacker_on_bench() or board.healthy_swap_available() or board.save_evolution_line():
+        if board.better_attacker_on_bench() or board.healthy_swap_available() or board.save_evolution_line() \
+                or board.losing_swap_available():
             return SCORE["retreat_ready"]
         return -10
 
@@ -859,6 +883,8 @@ def pick_counter_target(board, legal):
         hp = (mon or {}).get("hp") or 0
         if hp <= 0:
             continue  # 已經 0 HP（等著被打倒）的不用再放
+        if counter_immune(mon) and len(legal) > 1:
+            continue   # 帶 Rock Fighting Energy 等的：引擎實測放上去 0 傷害（Codex 敗局分析 61a5e057：浪費 18 個指示物）
         hurt = hp < ((mon or {}).get("maxHp") or hp)
         # 試過 Codex 建議的「先放到下一擊打得倒的門檻」（2026-10-18）：和高手選法不同的 89 次裡，
         # 高手 73 次照舊規則（集中放已受傷的），只有 10 次照新規則 → 不採用
@@ -868,6 +894,13 @@ def pick_counter_target(board, legal):
             key = (0, 0, 0, hurt, -hp)
         scored.append((key, action))
     return max(scored)[1] if scored else None
+
+
+COUNTER_IMMUNE_ENERGIES = {"Rock Fighting Energy", "Mist Energy"}
+
+
+def counter_immune(mon):
+    return any(card_info(card_id_of(c)).get("name") in COUNTER_IMMUNE_ENERGIES for c in (mon or {}).get("energyCards") or [])
 
 
 def pokemon_value(board, mon, side):
@@ -972,7 +1005,10 @@ def energy_starved(board):
     """場上寶可夢的計畫招式還缺有顏色的能量，而手上沒有任何一張補得上。"""
     missing = {e for m in board.my_pokemon() for e in missing_energy(m.get("energies"), plan_cost(m.get("id")))}
     missing.discard(COLORLESS)
-    return bool(missing) and not (missing & hand_energy_types(board))
+    # 這回合已經手貼過：手上的能量要下回合才貼得出去，Crispin 的「直接貼上」才補得到
+    # （Codex 敗局分析 5ad6e948 T9：前排 Dragapult 只缺火、手上有火但已手貼，選了 Unfair Stamp 沒出 Crispin）
+    usable = set() if board.current.get("energyAttached") else hand_energy_types(board)
+    return bool(missing) and not (missing & usable)
 
 
 def recoverable_value(board):

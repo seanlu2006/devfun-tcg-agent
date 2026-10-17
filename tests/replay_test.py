@@ -101,6 +101,7 @@ def synthetic_cases(strategy):
         ("前排 Dragapult ex 剩 80 HP 會被打倒、後排有滿血備好的：先撤退換人", healthy_swap_case(strategy), "[0]"),
         ("瀕死的 Drakloak、這回合打不倒對手、備戰區有 Budew：撤退保住進化線", save_line_case(strategy), "[0]"),
         ("對手 9 張手牌、Unfair Stamp 合法：攻擊前先出", stamp_case(strategy), "[0]"),
+        ("帶 Rock Fighting Energy 的 Solrock 放指示物無效：改放另一隻", rock_energy_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -304,6 +305,19 @@ def stamp_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
+
+
+def rock_energy_case(strategy):
+    ids = _ids(strategy)
+    rock = {"id": ids["Solrock"], "hp": 50, "maxHp": 110, "energies": [6], "energyCards": [{"id": ids["Rock Fighting Energy"]}]}
+    plain = {"id": ids["Solrock"], "hp": 110, "maxHp": 110, "energies": [], "energyCards": []}
+    players = [{"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}], "bench": [],
+                "benchMax": 5, "hand": [], "deckCount": 20},
+               {"active": [{"id": ids["Dreepy"], "hp": 0, "maxHp": 70, "energies": []}], "bench": [rock, plain], "benchMax": 5}]
+    options = [{"area": 5, "type": 3, "index": 0, "playerIndex": 1}, {"area": 5, "type": 3, "index": 1, "playerIndex": 1}]
+    obs = {"current": {"yourIndex": 0, "players": players},
+           "select": {"type": 1, "context": 14, "remainDamageCounter": 6, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
 
 
 def iter_decision_points():
