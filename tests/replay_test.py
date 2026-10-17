@@ -96,6 +96,8 @@ def synthetic_cases(strategy):
          discard_case(strategy), "[0,2]"),
         ("開局手上 Meowth ex、Budew、Dreepy：Budew 當戰鬥寶可夢", opening_case(strategy), "[1]"),
         ("場上已有 2 隻 Dragapult ex：不把最後一隻 Drakloak 也進化掉", last_drakloak_case(strategy), "[1]"),
+        ("競技場 Lumiose City 的特性會結束回合：先貼能量", lumiose_case(strategy), "[1]"),
+        ("惡能量：貼給還沒有惡能量的 Munkidori（特性要用），不貼 Fezandipiti ex", munkidori_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -229,6 +231,31 @@ def last_drakloak_case(strategy):
                {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
     options = [{"type": 9, "area": 2, "index": 0, "inPlayArea": 5, "inPlayIndex": 1}, {"type": 14}]
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def lumiose_case(strategy):
+    """選項 [0] 用 Lumiose City 的特性（會結束回合）、[1] 超能量貼給 Dreepy、[2] 結束。"""
+    ids = _ids(strategy)
+    players = [{"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [],
+                "benchMax": 5, "hand": [{"id": ids["Basic {P} Energy"]}], "deckCount": 30},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 10, "area": 7, "index": 0}, {"type": 8, "index": 0, "inPlayArea": 4, "inPlayIndex": 0}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1, "stadium": [{"id": ids["Lumiose City"]}]},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
+
+
+def munkidori_case(strategy):
+    """選項 [0] 惡能量貼戰鬥場的 Fezandipiti ex、[1] 貼備戰區的 Munkidori。"""
+    ids = _ids(strategy)
+    players = [{"active": [{"id": ids["Fezandipiti ex"], "hp": 210, "maxHp": 210, "energies": []}],
+                "bench": [{"id": ids["Munkidori"], "hp": 110, "maxHp": 110, "energies": []}],
+                "benchMax": 5, "hand": [{"id": ids["Basic {D} Energy"]}], "deckCount": 30},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 8, "index": 0, "inPlayArea": 4, "inPlayIndex": 0}, {"type": 8, "index": 0, "inPlayArea": 5, "inPlayIndex": 0}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1},
            "select": {"type": 0, "context": 0, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]"]}
 

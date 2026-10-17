@@ -43,6 +43,7 @@ AREA_HAND = 2
 AREA_DISCARD = 3
 AREA_ACTIVE = 4
 AREA_BENCH = 5
+AREA_STADIUM = 7    # 競技場（current.stadium）
 AREA_LOOKING = 12   # 正在看的牌（Drakloak 特性看牌庫上面 2 張），實際卡片在 current.looking
 
 CARD_POKEMON = 0
@@ -70,6 +71,8 @@ EX_IMMUNE_DEFENDERS = {"Crustle"}
 ENERGY_FETCH_CARDS = {"Crispin"}        # 從牌庫拿基本能量
 DISCARD_COST_CARDS = {"Ultra Ball": 2}   # 出牌時要先丟幾張手牌當代價
 RECOVERY_CARDS = {"Night Stretcher"}    # 從棄牌堆撿回寶可夢或基本能量
+TURN_ENDING_ABILITIES = {"Lumiose City"}   # 用了就結束回合的特性（卡牌目錄沒有特性文字，只能寫死）
+ABILITY_ENERGY = {"Munkidori": 7}          # 特性要身上有這種能量才能用（Munkidori 的 Adrena-Brain 要惡能量）
 THIN_BENCH = 3  # 場上（含戰鬥場）不到這個數量，就優先鋪寶可夢
 LOW_DECK = 10   # 牌庫剩這麼少，就停止用找牌特性
 GUST_CARDS = {"Boss’s Orders", "Boss's Orders", "Prime Catcher"}
@@ -280,6 +283,9 @@ class Board:
         if area == AREA_DISCARD:
             pile = (self.me if self.option_side(option) == "me" else self.opp).get("discard") or []
             return card_id_of(pile[index]) if index is not None and 0 <= index < len(pile) else None
+        if area == AREA_STADIUM:
+            cards = self.current.get("stadium") or []
+            return card_id_of(cards[index]) if isinstance(index, int) and 0 <= index < len(cards) else None
         if area == AREA_LOOKING:
             # Codex 敗局分析（2026-10-18）：以前沒讀這區，Drakloak 看到的兩張都當成未知卡、固定拿第一張，
             # 6 場有 7 次放過了「拿了就能湊齊 Phantom Dive」的能量
@@ -350,8 +356,13 @@ class Board:
         for attack_id in card_info(pokemon.get("id")).get("attacks") or []:
             atk = attack_info(attack_id)
             if not missing_energy(pokemon.get("energies"), atk.get("energies") or []):
-                best = max(best, self.damage_against(attack_id, pokemon, self.opp_active) if self.opp_active
-                           else (atk.get("damage") or 0))
+                hit = self.damage_against(attack_id, pokemon, self.opp_active) if self.opp_active \
+                    else (atk.get("damage") or 0)
+                # Phantom Dive 放到對手備戰區的指示物也算戰力（對手有備戰寶可夢時）：打 Crustle 本體是 0，
+                # 但 60 點照樣有效（Codex 敗局分析 121bda75 T27：戰鬥場 Dragapult 沒能量、備戰區有備好的，
+                # 兩隻都被算成 0，於是沒補撤退費換人）
+                spread = bench_spread(attack_id) if self.opp.get("bench") else 0
+                best = max(best, hit + spread)
         return best
 
     def max_damage_vs(self, defender):
@@ -430,6 +441,10 @@ def score_main_option(board, option):
         return score_play_card(board, option)
 
     if kind == OPT_ABILITY:
+        if card_info(board.option_card_id(option)).get("name") in TURN_ENDING_ABILITIES:
+            # 競技場 Lumiose City：搜完寶可夢就結束回合 → 排在佈局和攻擊之後
+            # （Codex 敗局分析 121bda75：4 個回合被它提前結束，其中一回合連攻擊都沒打）
+            return 1
         # 牌庫快見底就別再用找牌／抽牌類特性（2026-10-17 實戰：3 隻 Drakloak 每回合都找牌，牌庫被抽光判輸）
         deck_count = board.me.get("deckCount")
         if deck_count is not None and deck_count <= LOW_DECK:  # 不能寫 (deckCount or 99)：0 張會被當成 99（Codex 審查抓到）
@@ -474,10 +489,14 @@ def score_attach(board, option):
         # （Codex 對局分析 f6698511 T7：超能量貼給第二隻 Dragapult，Meowth 換不下來，等它被打倒才上場）
         # 排在進化（90）、特性（88）之後：高手多半先進化、先用 Drakloak 看牌，再貼（高手對照 2026-10-18）
         return SCORE["ability"] - 2
+    energy_type = card_info(board.hand_card_id(option.get("index", 0))).get("energyType")
+    ability_energy = ABILITY_ENERGY.get(card_info(target.get("id")).get("name"))
+    if ability_energy is not None and energy_type == ability_energy and ability_energy not in (target.get("energies") or []):
+        # 惡能量貼給還沒有惡能量的 Munkidori，牠的特性才能用（Codex 敗局分析 d963cd2f；高手 15 比 1）
+        return SCORE["attach_needed_active"] - 1
     missing = missing_energy(target.get("energies"), plan_cost(target.get("id")))
     if not missing:
         return SCORE["attach_extra"]
-    energy_type = card_info(board.hand_card_id(option.get("index", 0))).get("energyType")
     on_active = option.get("inPlayArea") == AREA_ACTIVE
     # 同分時的優先順序（2026-10-17 實戰：超能量貼給了 Drakloak，差一個就能打的 Dragapult ex 反而沒拿到）：
     # 貼完就湊齊的 +4 ＞ 進化階段高的（2 階 +2、1 階 +1）＞ 戰鬥場 +1
@@ -489,6 +508,22 @@ def score_attach(board, option):
     if COLORLESS in missing or energy_type is None:
         return SCORE["attach_colorless"] + bonus
     return SCORE["attach_extra"]  # 顏色不對：除非沒別的事做，不然不貼
+
+
+EVOLUTION_SEARCH_CARDS = {"Ultra Ball", "Poké Pad"}   # 能搜進化卡的（Poké Pad 不能搜規則寶可夢＝ex）
+
+
+def missing_evolution(board, search_card):
+    """場上有沒有一隻「下一階進化卡不在手上」的寶可夢（Poké Pad 只算非 ex 的進化卡）。"""
+    hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
+    for mon in board.my_pokemon():
+        for evo_id in EVOLVES_INTO.get(card_info(mon.get("id")).get("name")) or []:
+            evo_card = card_info(evo_id)
+            if search_card == "Poké Pad" and (evo_card.get("ex") or evo_card.get("megaEx")):
+                continue
+            if evo_card.get("name") not in hand:
+                return True
+    return False
 
 
 def needs_energy_to_retreat(board):
@@ -545,7 +580,8 @@ def score_play_card(board, option):
         return -1
     if name in SEARCH_POKEMON_CARDS:
         if board.bench_space() <= 0:
-            return SCORE["item"]
+            # 滿場也還能搜「場上缺的進化卡」（Codex 敗局分析 d963cd2f：滿場時 Poké Pad 一直留在手上；高手 13 比 0）
+            return SCORE["draw"] + 5 if name in EVOLUTION_SEARCH_CARDS and missing_evolution(board, name) else SCORE["item"]
         if thin:
             return SCORE["evolve"] - 2
         if len(board.my_pokemon()) <= THIN_BENCH:
@@ -821,6 +857,8 @@ def want_value(board, card_id, in_hand=False):
     if card.get("cardType") in (CARD_BASIC_ENERGY, CARD_SPECIAL_ENERGY):
         return 60 if card.get("energyType") in needed_colors(board) else 25
     if card.get("cardType") == CARD_SUPPORTER:
+        if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):
+            return 85   # 缺能量又還沒用支援者：Crispin 一張補 2 個能量（Codex 敗局分析 c0e4aafc、d601a6ff）
         return 40
     if card.get("name") in SEARCH_POKEMON_CARDS:
         return 45
