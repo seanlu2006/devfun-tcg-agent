@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Owner-hosted 執行器：在自己的電腦上跑 agent，跟平台一問一答地打比賽。
+
+TCG Playground S3 是 owner-hosted（executionMode＝remote），不是上傳 bundle：
+  加入（附牌組）→ 每秒詢問 pending-actions → 用 harness/strategy.py 的 act() 決定 → 送出 action
+  → 一場打完（Settled/Aborted）→ 還沒到 --max-matches 就再加入 → …
+
+⚠️ 牌組在「第一次加入」時就整季鎖定，之後不能換。第一次真的加入前要確定牌組。
+⚠️ 對戰進行中不要直接關掉：沒回應會超時判輸。按一次 Ctrl-C ＝「打完這場就停」；連按兩次才會立刻離開。
+
+用法：
+  python3 tools/run_agent.py --deck decks/xxx.json --max-matches 3      第一次加入（會鎖定牌組）
+  python3 tools/run_agent.py --max-matches 10                           之後再打（牌組已鎖定，不用再給）
+  python3 tools/run_agent.py --base http://127.0.0.1:8765/api/arena ...  連本機模擬伺服器（tests/mock_arena.py）
+"""
+import argparse
+import importlib.util
+import json
+import signal
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import arena_client as ac  # noqa: E402
+from validate_deck import expand, validate  # noqa: E402
+
+RUN_DIR = ROOT / "data" / "runs"
+DEADLINE_MARGIN_MS = 1500   # 離截止不到 1.5 秒就不想了，直接送保底動作
+STOP_ERRORS = {"engine_match_allowance_exhausted", "competition_closed"}
+
+
+def load_strategy():
+    spec = importlib.util.spec_from_file_location("strategy", ROOT / "harness" / "strategy.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Runner:
+    def __init__(self, args):
+        self.args = args
+        self.key = ac.load_credentials()["apiKey"]
+        self.strategy = load_strategy()
+        self.state = ac.load_state()
+        self.state.setdefault("matches", [])
+        self.matches_done = 0
+        self.stop_after_match = False
+        RUN_DIR.mkdir(parents=True, exist_ok=True)
+        self.log_path = RUN_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+
+    def log(self, **event):
+        event["t"] = time.strftime("%H:%M:%S")
+        with self.log_path.open("a") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+    def call(self, method, path, body=None):
+        return ac.request(method, path, body, key=self.key)
+
+    # ---------------------------------------------------------------- 加入
+    def join(self):
+        body = {"competitionId": ac.COMPETITION_ID}
+        if not self.state.get("deck_locked"):
+            if not self.args.deck:
+                sys.exit("還沒加入過這一季：第一次要用 --deck 指定牌組（會整季鎖定）")
+            deck = json.loads(Path(self.args.deck).read_text())
+            errors, _ = validate(deck)
+            if errors:
+                sys.exit("牌組不合法：" + "；".join(errors))
+            body["joinPayload"] = expand(deck)
+        status, data = self.call("POST", "/tcg/join", body)
+        code = data.get("error") or data.get("code")
+
+        if status == 409 and code == "payload_locked":
+            self.state["deck_locked"] = True       # 之前已經鎖定了：不帶牌組再加入一次
+            ac.save_state(self.state)
+            return self.join()
+        if code in STOP_ERRORS:
+            print(f"停止：{code}（{data.get('message', '')}）")
+            return False
+        if status >= 300:
+            sys.exit(f"加入失敗（HTTP {status}）：{data}")
+
+        if "joinPayload" in body:
+            self.state.update(deck_locked=True, deck=body["joinPayload"], deck_name=Path(self.args.deck).stem)
+            ac.save_state(self.state)
+            print(f"已用牌組 {Path(self.args.deck).stem} 加入，這一季的牌組已鎖定。")
+        print(f"加入：{data.get('status')}" + (f"，對戰 {data.get('matchId')}" if data.get("matchId") else "，排隊中…"))
+        self.log(event="join", status=data.get("status"), matchId=data.get("matchId"))
+        return True
+
+    # ---------------------------------------------------------------- 回答一個決策點
+    def answer(self, pending):
+        legal = pending.get("legalActions") or []
+        context = {"observation": pending.get("obs") or {}, "legalActions": legal}
+        started = time.time()
+        deadline = pending.get("deadline") or 0
+        if deadline and deadline - time.time() * 1000 < DEADLINE_MARGIN_MS:
+            action = self.strategy.safe_default(legal)
+        else:
+            action = self.strategy.act(context)
+        status, data = self.call("POST", "/tcg/action",
+                                 {"matchId": pending["matchId"], "seq": pending["seq"], "action": action})
+        if status == 422:  # 不合法：重讀這個決策點、送保底動作一次
+            action = self.strategy.safe_default(legal)
+            status, data = self.call("POST", "/tcg/action",
+                                     {"matchId": pending["matchId"], "seq": pending["seq"], "action": action})
+        select = (context["observation"].get("select") or {})
+        self.log(event="action", matchId=pending["matchId"], seq=pending["seq"], action=action,
+                 select=[select.get("type"), select.get("context")], legal=len(legal),
+                 ms=round((time.time() - started) * 1000), http=status, matchStatus=data.get("matchStatus"))
+        return data.get("matchStatus")
+
+    def finish_match(self, match_id, match_status):
+        self.matches_done += 1
+        self.state["matches"].append({"matchId": match_id, "status": match_status, "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        ac.save_state(self.state)
+        print(f"第 {self.matches_done} 場結束（{match_status}）：{match_id}")
+        self.log(event="match_end", matchId=match_id, status=match_status)
+
+    # ---------------------------------------------------------------- 主迴圈
+    def should_stop(self):
+        return self.stop_after_match or self.matches_done >= self.args.max_matches
+
+    def match_status(self, match_id):
+        _, data = self.call("GET", f"/tcg/battle/{match_id}")
+        return data.get("status")
+
+    def run(self):
+        if not self.join():
+            return
+        tracked, finished = set(), set()   # 看過的進行中對戰／已經算過的對戰
+        last_join = time.time()
+        while True:
+            status, data = self.call("GET", f"/tcg/pending-actions?competitionId={ac.COMPETITION_ID}")
+            if status >= 300:
+                print(f"  詢問失敗（HTTP {status}）：{data}，2 秒後重試")
+                time.sleep(2)
+                continue
+            pending = data.get("pending") or []
+            active = {m if isinstance(m, str) else m.get("matchId") for m in data.get("activeMatches") or []}
+            active |= {p["matchId"] for p in pending}
+
+            ended = []
+            for p in sorted(pending, key=lambda p: p.get("deadline") or 0):
+                result = self.answer(p)
+                if result in ("Settled", "Aborted") and p["matchId"] not in finished:
+                    ended.append((p["matchId"], result))
+            # 在對手那一步結束的對戰：我們收不到結束回應，只會看到它從清單消失 → 主動查結果
+            for match_id in tracked - active - finished - {m for m, _ in ended}:
+                result = self.match_status(match_id)
+                if result in ("Settled", "Aborted"):
+                    ended.append((match_id, result))
+            for match_id, result in ended:
+                finished.add(match_id)
+                self.finish_match(match_id, result)
+            tracked = (tracked | active) - finished
+
+            if ended or (not active and time.time() - last_join > 3):
+                if self.should_stop() and not active - finished:
+                    print(f"已打完 {self.matches_done} 場，停止（沒有再加入）。")
+                    return
+                if not self.should_stop():
+                    if not self.join():   # 排隊中重複加入不會失去位置（官方說明）
+                        return
+                    last_join = time.time()
+            if not pending:
+                time.sleep(self.args.poll)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--deck", help="第一次加入用的牌組（會整季鎖定）")
+    parser.add_argument("--max-matches", type=int, default=3, help="打幾場就停（預設 3）")
+    parser.add_argument("--poll", type=float, default=1.0, help="詢問間隔秒數（預設 1）")
+    parser.add_argument("--base", help="改連別的伺服器（例如本機模擬伺服器）")
+    parser.add_argument("--state", help="改用別的狀態檔（測試用，避免動到真正的 .arena-tcg-state）")
+    parser.add_argument("--credentials", help="改用別的金鑰檔（測試用）")
+    args = parser.parse_args()
+    if args.base:
+        ac.BASE = args.base.rstrip("/")
+    if args.state:
+        ac.STATE = Path(args.state)
+    if args.credentials:
+        ac.CREDENTIALS = Path(args.credentials)
+    runner = Runner(args)
+
+    def on_sigint(signum, frame):
+        if runner.stop_after_match:
+            print("\n立刻離開（進行中的對戰可能會超時判輸）")
+            sys.exit(1)
+        runner.stop_after_match = True
+        print("\n收到 Ctrl-C：打完這一場就停（再按一次會立刻離開）")
+    signal.signal(signal.SIGINT, on_sigint)
+
+    print(f"記錄檔：{runner.log_path}")
+    runner.run()
+
+
+if __name__ == "__main__":
+    main()

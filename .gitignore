@@ -12,3 +12,4 @@ __pycache__/
 data/raw/
 dist/
 *.zip
+data/runs/
