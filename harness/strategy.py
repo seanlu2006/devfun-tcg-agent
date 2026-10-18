@@ -806,17 +806,20 @@ def wasted_on_doomed_active(board, target, energy_type):
 
 def facing_wall(board):
     """對手戰鬥場是 ex 打不動的牆（Crustle）。只在這種對局啟用省牌庫、保 Drakloak 等規則。"""
+    return False   # A/B 的 B 組：關掉所有牆對局（Crustle）特例規則
     return card_info((board.opp_active or {}).get("id")).get("name") in EX_IMMUNE_DEFENDERS
 
 
 def wall_in_play(board):
     """對手場上（戰鬥場或備戰區）有 ex 打不動的牆 → 這場會拖很久，要省牌庫。"""
+    return False   # A/B 的 B 組：關掉所有牆對局（Crustle）特例規則
     return any(card_info((m or {}).get("id")).get("name") in EX_IMMUNE_DEFENDERS
                for m in (board.opp.get("active") or []) + (board.opp.get("bench") or []))
 
 
 def wall_attacker_ready(board):
     """牆對局：我們的戰鬥場是非 ex、能打 60 以上、而且下回合挨得住 → 可以開始省牌庫。"""
+    return False   # A/B 的 B 組：關掉所有牆對局（Crustle）特例規則
     active = board.my_active
     card = card_info((active or {}).get("id"))
     return facing_wall(board) and active and not (card.get("ex") or card.get("megaEx")) \
