@@ -694,6 +694,8 @@ def score_attach(board, option):
     if energy_type is not None and energy_type in missing and energy_type != COLORLESS:
         return SCORE["attach_needed_active" if on_active else "attach_needed_bench"] + bonus
     if COLORLESS in missing or energy_type is None:
+        if pointless_support_attach(board, target, energy_type, option):
+            return SCORE["draw"] - 5   # 先出抽牌支援者（Codex 對局分析 ab4ef295 T4：惡能先貼給鳥，花掉手貼）
         return SCORE["attach_colorless"] + bonus
     return SCORE["attach_extra"]  # 顏色不對：除非沒別的事做，不然不貼
 
@@ -793,6 +795,28 @@ def cape_ko_after_tower(board):
     dmg = max([board.damage_against(o.get("attackId"), board.my_active, opp) for o in board.options
                if isinstance(o, dict) and o.get("type") == OPT_ATTACK] or [0])
     return 0 < hp - 100 <= dmg < hp
+
+
+def pointless_support_attach(board, target, energy_type, option):
+    """貼給非進化線的配角、貼完還是不能攻擊／開特性／付撤退費，而手上有能用的抽牌支援者。"""
+    card = card_info(target.get("id"))
+    if EVOLVES_INTO.get(card.get("name")) or card.get("stage1") or card.get("stage2"):
+        return False
+    after = (target.get("energies") or []) + [energy_type]
+    if any(not missing_energy(after, attack_info(a).get("energies") or []) for a in card.get("attacks") or []):
+        return False
+    if ABILITY_ENERGY.get(card.get("name")) == energy_type:
+        return False
+    if option.get("inPlayArea") == AREA_ACTIVE and needs_energy_to_retreat(board):
+        return False
+    return not board.current.get("supporterPlayed") and any(
+        card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS for c in board.me.get("hand") or [])
+
+
+def holds_evolution_chain(board):
+    """手上的進化卡能接上場上的寶可夢（Dreepy＋手上 Drakloak；或 Drakloak＋手上 Dragapult ex）。"""
+    in_play = board.names_in_play()
+    return any(card_info(card_id_of(c)).get("evolvesFrom") in in_play for c in board.me.get("hand") or [])
 
 
 def needs_energy_to_retreat(board):
@@ -907,6 +931,10 @@ def score_play_card(board, option):
     if name == "Judge" and deck_count is not None and deck_count <= 2 and len(board.me.get("hand") or []) - 1 > 4:
         # 牌庫快抽光：Judge 把手牌洗回去（Codex 敗局分析 5b1c90af T31：牌庫 0、手牌 9，沒出 Judge，抽光判輸）
         return SCORE["attack_ko"] + 9
+    if name == "Judge" and holds_evolution_chain(board):
+        # 場上有 Dreepy、手上握著 Drakloak／Dragapult ex：Judge 會把確定的進化鏈洗掉
+        # （Codex 對局分析 0c1e6d44 T2：這樣洗掉後拖到 T6 才有 Drakloak，整場沒打出 Phantom Dive）
+        return -1
     if name == "Judge":
         # 雙方洗手牌、各抽 4：自己手上能用的牌少時，它就是抽牌支援者（Codex 敗局分析 f4a8c816、8d2c126f：
         # 手上只剩用不到的牌，Judge 被當干擾卡固定 30 分，一直沒出）
@@ -987,6 +1015,17 @@ def choose_main(board, legal):
         score = score_main_option(board, option)
         if best_score is None or score > best_score:
             best, best_score = action, score
+    # 要出 Ultra Ball、而手上能用的 Crushing Hammer 會被當成丟牌代價：先把 Hammer 打出去
+    # （Codex 對局分析 ab4ef295 T6、dc25404c T2：先 Ultra Ball 再丟掉能拆水能的 Hammer）
+    chosen = single_pick(board, best) if best else None
+    if chosen and chosen.get("type") == OPT_PLAY_FROM_HAND \
+            and card_info(board.hand_card_id(chosen.get("index", 0))).get("name") == "Ultra Ball":
+        for action in legal:
+            option = single_pick(board, action)
+            if option and option.get("type") == OPT_PLAY_FROM_HAND \
+                    and card_info(board.hand_card_id(option.get("index", 0))).get("name") == "Crushing Hammer" \
+                    and score_main_option(board, option) > 0:
+                return action
     return best
 
 
@@ -1061,6 +1100,33 @@ def pick_hammer_target(board, legal):
         mon = board.in_play(option.get("area"), option.get("index"), "opp") or {}
         return (1 if option.get("area") == AREA_ACTIVE else 0, prize_value(mon.get("id")),
                 -len(mon.get("energies") or []))
+    # 拆哪顆都擋不住戰鬥場的招式、我方又有 Phantom Dive → 拆備戰區的 Rock Fighting Energy，讓指示物放得上去
+    # （Codex 對局分析 895c8782 T13：拆了前排四顆鬥能之一，剩三顆照打）
+    opp_active = board.opp_active or {}
+    def disables(action):
+        option = single_pick(board, action)
+        if not option or option.get("area") != AREA_ACTIVE or board.option_side(option) != "opp":
+            return False
+        energies = list(opp_active.get("energies") or [])
+        idx = option.get("energyIndex")
+        if isinstance(idx, int) and 0 <= idx < len(energies):
+            energies.pop(idx)
+        return all(missing_energy(energies, attack_info(a).get("energies") or [])
+                   for a in card_info(opp_active.get("id")).get("attacks") or [])
+    def removes_rock(action):
+        option = single_pick(board, action)
+        if not option or board.option_side(option) != "opp":
+            return False
+        mon = board.in_play(option.get("area"), option.get("index"), "opp") or {}
+        cards = mon.get("energyCards") or []
+        idx = option.get("energyIndex")
+        return isinstance(idx, int) and 0 <= idx < len(cards) \
+            and card_info(card_id_of(cards[idx])).get("name") == "Rock Fighting Energy"
+    have_dive = any(bench_spread(a) for a in card_info((board.my_active or {}).get("id")).get("attacks") or [])
+    if have_dive and not any(disables(a) for a in legal):
+        rock = [a for a in legal if removes_rock(a)]
+        if rock:
+            return rock[0]
     # 同分（例：同一隻身上的不同能量）照原本順序拿第一個——高手 17 次裡有 14 次是這樣
     scored = [(rank(a), -i, a) for i, a in enumerate(legal)]
     scored = [x for x in scored if x[0] is not None]
