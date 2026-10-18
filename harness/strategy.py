@@ -639,6 +639,12 @@ def score_attach(board, option):
     if ability_energy is not None and energy_type == ability_energy and ability_energy not in (target.get("energies") or []):
         # 惡能量貼給還沒有惡能量的 Munkidori，牠的特性才能用（Codex 敗局分析 d963cd2f；高手 15 比 1）
         return SCORE["attach_needed_active"] - 1
+    if option.get("inPlayArea") == AREA_BENCH and board.power_now(board.my_active) == 0 and energy_type is not None:
+        # 戰鬥場打不出東西（例：Dragapult ex 對 Crustle）：先補齊「貼完就能打 60 以上」的候補，再撤退換它
+        # （Codex 敗局分析 d9eb6e13 T23：最後一張超能量貼給打 0 的 Dragapult，沒補齊能打 70 的 Drakloak，差 1 獎輸掉）
+        after = dict(target, energies=(target.get("energies") or []) + [energy_type])
+        if board.power_now(after) >= 60 > board.power_now(target):
+            return SCORE["attach_needed_active"] + 2 + board.power_now(after) / 1000   # 打得越痛越優先
     missing = missing_energy(target.get("energies"), plan_cost(target.get("id")))
     if not missing:
         return SCORE["attach_extra"]
