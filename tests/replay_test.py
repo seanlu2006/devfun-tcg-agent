@@ -104,6 +104,7 @@ def synthetic_cases(strategy):
         ("帶 Rock Fighting Energy 的 Solrock 放指示物無效：改放另一隻", rock_energy_case(strategy), "[1]"),
         ("場上已有 Budew 和另外兩隻：不再鋪第二隻 Budew（30 HP 送分）", second_budew_case(strategy), "[1]"),
         ("Ultra Ball 丟 2 張：留住唯一的 Lillie's，丟 Hammer＋惡能量", keep_lillie_case(strategy), "[0,2]"),
+        ("對上 Crustle（備戰區沒人）：能打 70 的 Drakloak 不進化成打 0 的 Dragapult ex", crustle_evolve_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -348,6 +349,19 @@ def keep_lillie_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 2},
            "select": {"type": 1, "context": 8, "minCount": 2, "maxCount": 2, "option": options}}
     return {"observation": obs, "legalActions": ["[0,1]", "[0,2]", "[1,2]"]}
+
+
+def crustle_evolve_case(strategy):
+    ids = _ids(strategy)
+    drak = next(iter(strategy.card_info(ids["Drakloak"])["attacks"]))
+    players = [{"active": [{"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": [2, 5]}], "bench": [],
+                "benchMax": 5, "hand": [{"id": ids["Dragapult ex"]}], "deckCount": 20},
+               {"active": [{"id": ids["Crustle"], "hp": 150, "maxHp": 150, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 9, "area": 2, "index": 0, "inPlayArea": 4, "inPlayIndex": 0}, {"type": 13, "attackId": drak},
+               {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 2},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
 
 
 def iter_decision_points():

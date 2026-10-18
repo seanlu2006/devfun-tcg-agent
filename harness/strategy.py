@@ -562,6 +562,12 @@ def score_main_option(board, option):
         names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
         if target_name == "Drakloak" and names.count("Drakloak") == 1 and names.count(evolves_to) >= 2:
             return -1   # 等其中一隻 Dragapult ex 被打倒（剩不到 2 隻）才進化，這條就不擋了
+        # 進化後戰力反而下降（對上 Crustle：能打 70 的 Drakloak 進化成打 0 的 Dragapult ex）→ 不進化
+        # （Codex 對局分析：三場 Crustle 消耗戰都這樣把唯一打得動的攻擊手進化掉）
+        if target and board.hand_card_id(option.get("index", 0)) is not None:   # 看不到手牌（公開紀錄）就不判斷
+            evolved = dict(target, id=board.hand_card_id(option.get("index", 0)))
+            if board.power_now(target) >= 60 and board.power_now(evolved) < board.power_now(target):
+                return -1
         # 試過「進化後會被打倒的戰鬥場改進化別隻」（Codex 建議）：高手 13 次跟舊規則、9 次跟新規則，不採用
         return SCORE["evolve"]
 
@@ -827,6 +833,11 @@ def score_play_card(board, option):
     if name in RECOVERY_CARDS:
         # Night Stretcher：棄牌堆有主力要的能量或主力線寶可夢才用，不然留著
         return SCORE["draw"] + 5 if recoverable_value(board) else SCORE["item"] - 5
+    if name in ("Lillie's Determination", "Lillie’s Determination"):
+        deck_count = board.me.get("deckCount")
+        draw_n = 8 if len(board.me.get("prize") or []) >= 6 else 6
+        if deck_count is not None and deck_count + len(board.me.get("hand") or []) - 1 - draw_n <= 0:
+            return -1   # 用完牌庫會變 0（Codex 對局分析 308e86ac T31：牌庫 1 張還出 Lillie's）
     if card_type == CARD_SUPPORTER:
         # 主力缺顏色、手上又補不上：抽牌（Lillie's 等）優先於 Dawn 這類搜寶可夢的（55）
         # （Codex 對局分析 f6698511 T13：先用 Dawn，支援者額度用掉，看到的 Crispin 用不了）
@@ -1135,10 +1146,12 @@ def want_value(board, card_id, in_hand=False):
             return 70 if board.bench_space() > 0 else 20       # 進化線的起點
         return 50 if board.bench_space() > 0 else 15
     if card.get("cardType") in (CARD_BASIC_ENERGY, CARD_SPECIAL_ENERGY):
-        active = board.my_active
-        if active and not board.current.get("energyAttached") and not in_hand \
-                and missing_energy(active.get("energies"), plan_cost(active.get("id"))) == [card.get("energyType")] \
-                and card.get("energyType") not in hand_energy_types(board):
+        # 拿了這回合就能貼上、湊齊某隻的計畫招式（戰鬥場；或備戰區的 Drakloak 等。Codex 對局分析 308e86ac：
+        # Night Stretcher 撿 Dreepy 不撿火能量；四位高手 1 比 0）
+        if not board.current.get("energyAttached") and not in_hand \
+                and card.get("energyType") not in hand_energy_types(board) \
+                and any(missing_energy(m.get("energies"), plan_cost(m.get("id"))) == [card.get("energyType")]
+                        for m in board.my_pokemon()):
             # 拿了這回合就能貼上、湊齊戰鬥場的計畫招式（Codex 敗局分析 f4a8c816：Night Stretcher 撿 Dreepy 不撿超能量；高手 6 比 1）
             return 92
         return 60 if card.get("energyType") in needed_colors(board) else 25
