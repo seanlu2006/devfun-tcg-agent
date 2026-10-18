@@ -572,8 +572,17 @@ def score_main_option(board, option):
                            key=len, default=[])
             others_ready = any(m is not target and not card_info(m.get("id")).get("ex") and board.power_now(m) >= 60
                                for m in board.my_pokemon())
-            if len(missing_energy(target.get("energies"), own_cost)) <= 1 and not others_ready:
-                return -1
+            lacking = missing_energy(target.get("energies"), own_cost)
+            if len(lacking) <= 1 and not others_ready:
+                # 補齊後比較進化前後的戰力（含有效的備戰區指示物）：只有進化會變弱才擋
+                # （第 28 批：一律擋時，沒帶 Battle Cage 的 Crustle 對局也不進化，Phantom Dive 的 60 點被浪費）
+                filled = (target.get("energies") or []) + [e if e != COLORLESS else 1 for e in lacking]
+                before = board.power_now(dict(target, energies=filled))
+                after = board.power_now(dict(target, energies=filled, id=board.hand_card_id(option.get("index", 0))))
+                # 只在「進化後完全打不出東西」（Battle Cage 擋掉備戰指示物）時擋：備戰指示物有效時，
+                # Dragapult ex 的 320 HP 撐得住 Crustle，Drakloak 的 90 撐不住（第 28 批 54a52fdc：一律擋，0 比 5 輸）
+                if after == 0 < before:
+                    return -1
         if target and board.hand_card_id(option.get("index", 0)) is not None:   # 看不到手牌（公開紀錄）就不判斷
             evolved = dict(target, id=board.hand_card_id(option.get("index", 0)))
             if board.power_now(target) >= 60 and board.power_now(evolved) < board.power_now(target):
