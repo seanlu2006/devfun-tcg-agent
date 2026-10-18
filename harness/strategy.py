@@ -552,11 +552,8 @@ def score_main_option(board, option):
     if kind == OPT_EVOLVE:
         # 要進化的那隻現在還能用特性（Drakloak 看 2 張拿 1 張）→ 先用特性，進化後就沒了
         # （Codex 敗局分析：24 場、37 次先進化成 Dragapult ex，白白少看兩張牌）
-        deck_count = board.me.get("deckCount")
-        if (deck_count is None or deck_count > LOW_DECK) and any(
-                isinstance(o, dict) and o.get("type") == OPT_ABILITY and o.get("area") == option.get("inPlayArea")
-                and o.get("index") == option.get("inPlayIndex") for o in board.options):
-            return SCORE["ability"] - 1
+        # （這個判斷放到下面所有「不要進化」的檢查之後——以前放在最前面，一成立就直接回傳，
+        #  後面的保護全被跳過；Codex Crustle 研究 60e0127f T5：能打 70 的 Drakloak 因此被進化成打 0 的 Dragapult ex）
         # 場上已經有 2 隻 Dragapult ex，就別把最後一隻 Drakloak 也進化掉：之後每回合還要靠它找牌
         # （Codex 對局分析 f6698511 T7：進化成第三隻 Dragapult 後，T9、T11 都沒有 Drakloak 可以用）
         target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex"))
@@ -590,6 +587,11 @@ def score_main_option(board, option):
             if board.power_now(target) >= 60 and board.power_now(evolved) < board.power_now(target):
                 return -1
         # 試過「進化後會被打倒的戰鬥場改進化別隻」（Codex 建議）：高手 13 次跟舊規則、9 次跟新規則，不採用
+        deck_count = board.me.get("deckCount")
+        if (deck_count is None or deck_count > LOW_DECK) and any(
+                isinstance(o, dict) and o.get("type") == OPT_ABILITY and o.get("area") == option.get("inPlayArea")
+                and o.get("index") == option.get("inPlayIndex") for o in board.options):
+            return SCORE["ability"] - 1
         return SCORE["evolve"]
 
     if kind == OPT_ATTACH_ENERGY:
@@ -679,6 +681,15 @@ def score_attach(board, option):
         after = dict(target, energies=(target.get("energies") or []) + [energy_type])
         if board.power_now(after) >= 60 and board.power_now(after) > board.power_now(target):   # 高手 4 比 0
             return SCORE["attach_needed_active"] + 2 + board.power_now(after) / 1000   # 打得越痛越優先
+    if wall_in_play(board) and card_info(target.get("id")).get("name") == "Drakloak" and energy_type is not None:
+        # 對 Crustle：Drakloak 是正面攻擊手，看它自己招式（不是未來 Dragapult ex）的費用
+        # （Codex Crustle 研究 60e0127f T9：沒把超能量補給 Drakloak，對手 Crustle 只剩 30 HP）
+        own = min((attack_info(a).get("energies") or [] for a in card_info(target.get("id")).get("attacks") or []),
+                  key=len, default=[])
+        lacking = missing_energy(target.get("energies"), own)
+        after = missing_energy((target.get("energies") or []) + [energy_type], own)
+        if lacking and not after:
+            return SCORE["ability"] - 1 + board.power_now(dict(target, energies=(target.get("energies") or []) + [energy_type])) / 1000
     missing = missing_energy(target.get("energies"), plan_cost(target.get("id")))
     if not missing and tera_taxed(board, target):
         # Nighttime Mine：太晶 Dragapult ex 的 Phantom Dive 多要 1 個無色（Codex 對手研究 5484d545 T6：火超齊了卻沒補第三個）
@@ -1098,6 +1109,10 @@ def choose_other(board, legal):
         moved = pick_counter_move_target(board, legal)
         if moved is not None:
             return moved
+        if stadium_name(board) in SPREAD_BLOCKING_STADIUMS:
+            front = [a for a in legal if (single_pick(board, a) or {}).get("area") == AREA_ACTIVE]
+            if front:
+                return front[0]   # Battle Cage：移到備戰區會被擋，放前排（Codex Crustle 研究 13a1d2d0 T27）
     if ctx in (CTX_NEW_ACTIVE, CTX_SWITCH, CTX_OPP_TARGET):
         return pick_pokemon(board, legal)
     if card_info((board.select.get("effect") or {}).get("id")).get("name") in ENERGY_FETCH_CARDS:
@@ -1176,6 +1191,9 @@ def pick_hammer_target(board, legal):
         idx = option.get("energyIndex")
         return isinstance(idx, int) and 0 <= idx < len(cards) \
             and card_info(card_id_of(cards[idx])).get("name") == "Rock Fighting Energy"
+    stoppers = [a for a in legal if disables(a)]
+    if stoppers:
+        return stoppers[0]   # 拆完這顆，對手前排就付不起招式（Codex Crustle 研究：先比較能不能停攻）
     have_dive = any(bench_spread(a) for a in card_info((board.my_active or {}).get("id")).get("attacks") or [])
     if have_dive and not any(disables(a) for a in legal):
         rock = [a for a in legal if removes_rock(a)]
@@ -1292,10 +1310,13 @@ def pick_counter_move_target(board, legal):
     hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
     can_gust = bool(hand & {"Prime Catcher"}) or (bool(hand & GUST_CARDS) and not board.current.get("supporterPlayed"))
     best, best_gain = None, 0
+    cage = stadium_name(board) in SPREAD_BLOCKING_STADIUMS
     for action in legal:
         option = single_pick(board, action)
         if not option or board.option_side(option) != "opp":
             continue
+        if cage and option.get("area") == AREA_BENCH:
+            continue   # Battle Cage 連特性放到備戰區的指示物也擋（Codex Crustle 研究；antge 2 比 0）
         mon = board.in_play(option.get("area"), option.get("index"), "opp") or {}
         hp, dmg = mon.get("hp") or 0, board.max_damage_vs(mon)
         if 0 < hp <= moved:
