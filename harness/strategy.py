@@ -908,8 +908,14 @@ def score_play_card(board, option):
             return -1   # 用完牌庫會變 0（Codex 對局分析 308e86ac T31：牌庫 1 張還出 Lillie's）
         if wall_attacker_ready(board) and draw_n > len(board.me.get("hand") or []) - 1:
             return -1   # 牆對局、攻擊手已在打：會淨減牌庫的 Lillie's 先不用
-        if wall_in_play(board) and deck_count is not None and deck_count <= 20 and len(board.me.get("hand") or []) >= 3:
+        net_gain = len(board.me.get("hand") or []) - 1 - draw_n   # >0：洗回去的比抽的多，牌庫反而變多
+        if wall_in_play(board) and deck_count is not None and deck_count <= 20 and len(board.me.get("hand") or []) >= 3 \
+                and net_gain <= 0:
             return -1   # 對手有 Crustle、牌庫剩 20 以下：手上還有牌就先不用 Lillie's
+        if wall_in_play(board) and deck_count is not None and deck_count <= 10 and net_gain > 0:
+            # 牌庫快見底、手牌又多：用 Lillie's 把牌洗回去補牌庫（Codex 對手研究：StartupBros 對 rimeblade
+            # 的長局 T49 用它把牌庫從 3 補到 19，最後贏）
+            return SCORE["attach_needed_active"]
         if active_color_starved(board) and len(board.me.get("hand") or []) <= 2 \
                 and not board.current.get("energyAttached"):
             # 戰鬥場缺一種顏色、還能手貼、手牌只剩這麼少：先抽，不要為了 1 獎的小攻擊跳過
