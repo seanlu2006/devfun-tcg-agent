@@ -687,6 +687,17 @@ def opp_stadium_blocks_spread(board):
     return any(bench_spread(a) for a in card_info(active.get("id")).get("attacks") or [])
 
 
+def opp_stadium_blocks_ex(board):
+    """對手放的 Neutralization Zone 擋住我們已經能打的 ex（Codex 敗局分析 dfa490a5、bdaf4054：Jamming Tower 被留到丟掉）。"""
+    stadium = (board.current.get("stadium") or [None])[0]
+    if not stadium or card_info(card_id_of(stadium)).get("name") not in EX_BLOCKING_STADIUMS:
+        return False
+    if isinstance(stadium, dict) and stadium.get("playerIndex") == board.my_index:
+        return False
+    return any((card_info(m.get("id")).get("ex") or card_info(m.get("id")).get("megaEx")) and board.can_attack_now(m)
+               for m in board.my_pokemon())
+
+
 EVOLUTION_SEARCH_CARDS = {"Ultra Ball", "Poké Pad"}   # 能搜進化卡的（Poké Pad 不能搜規則寶可夢＝ex）
 
 
@@ -810,7 +821,8 @@ def score_play_card(board, option):
     if name in DISCARD_COST_CARDS and not can_afford_discard(board, option.get("index", 0), DISCARD_COST_CARDS[name]):
         # 2026-10-18 第 6 批：手上只剩 Poké Pad 和 Drakloak 還出 Ultra Ball，丟掉 Drakloak 去搜另一張 Drakloak
         return -1
-    if name in EVOLUTION_SEARCH_CARDS and missing_engine(board) and missing_evolution(board, name):
+    if name in EVOLUTION_SEARCH_CARDS and (missing_engine(board) or (ready_upgrade(board) and name == "Ultra Ball")) \
+            and missing_evolution(board, name):
         return SCORE["evolve"] - 3   # 場上有 Dreepy 卻沒有任何 Drakloak：先把找牌引擎搜出來（Codex 對局分析 76378bdb）
     if card_type == CARD_SUPPORTER and name in SEARCH_POKEMON_CARDS and energy_starved(board) \
             and any(card_info(card_id_of(c)).get("name") in ENERGY_FETCH_CARDS for c in board.me.get("hand") or []):
@@ -851,7 +863,7 @@ def score_play_card(board, option):
         if (board.opp.get("handCount") or 0) > 3:
             return SCORE["attack_ko"] + 9
         return SCORE["item"]
-    if card_type == CARD_STADIUM and opp_stadium_blocks_spread(board):
+    if card_type == CARD_STADIUM and (opp_stadium_blocks_spread(board) or opp_stadium_blocks_ex(board)):
         # 對手的 Battle Cage 會擋掉 Phantom Dive 放到備戰區的指示物 → 先用自己的競技場蓋掉
         # （Codex 敗局分析 db338914：三個回合的指示物都被擋，手上有 Jamming Tower 卻沒出）
         return SCORE["attack_ko"] + 9
@@ -1191,6 +1203,14 @@ def want_value(board, card_id, in_hand=False):
     if card.get("name") == "Unfair Stamp" and (board.opp.get("handCount") or 0) >= 8 and opp_has_hand_attack(board) \
             and "Unfair Stamp" not in {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}:
         return 94   # 對手靠手牌張數打傷害（Powerful Hand）：Stamp 把他壓到 2 張（Codex 對局分析 c39d05e7：對手 19、23 張手牌時沒拿）
+    if card.get("name") in GUST_CARDS and not board.current.get("supporterPlayed") \
+            and not {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []} & GUST_CARDS:
+        opp = board.opp_active or {}
+        active_prizes = prize_value(opp.get("id")) if 0 < (opp.get("hp") or 0) <= board.max_damage_vs(opp) else 0
+        best = max([prize_value(m.get("id")) for m in board.opp.get("bench") or []
+                    if m and 0 < (m.get("hp") or 0) <= board.max_damage_vs(m)] or [0])
+        if best > active_prizes:
+            return 94   # 備戰區有現在就打得倒、獎賞卡更多的 → 拿 Boss（Codex 敗局分析 5e464d31：放過 130 HP 的 Mega Lucario）
     if card.get("cardType") == CARD_SUPPORTER:
         if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):
             return 85   # 缺能量又還沒用支援者：Crispin 一張補 2 個能量（Codex 敗局分析 c0e4aafc、d601a6ff）
@@ -1313,8 +1333,23 @@ def can_afford_discard(board, hand_index, n):
     cheapest = sorted(keep_value(board, cid) for cid in others)[:n]
     # 場上有 Dreepy 卻沒有任何 Drakloak／Dragapult、手上也沒有：找引擎比留一張能量重要，門檻放寬到 75
     # （Codex 對局分析 76378bdb T13：嫌火能量太貴不出 Ultra Ball，整場沒進化過）
-    limit = 75 if missing_engine(board) else 60
+    limit = 75 if missing_engine(board) or ready_upgrade(board) else 60
     return all(v < limit for v in cheapest)
+
+
+def ready_upgrade(board):
+    """場上有一隻「能量已經夠進化型打招式」的寶可夢，而那張進化卡不在手上（例：火＋超的 Drakloak、手上沒 Dragapult ex）。
+    （Codex 敗局分析 e9622a74 T6：嫌超能量太貴不出 Ultra Ball，Drakloak 只打 70 就被打倒；進化後可打 200、HP 320）"""
+    hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
+    for mon in board.my_pokemon():
+        for evo_id in EVOLVES_INTO.get(card_info(mon.get("id")).get("name")) or []:
+            evo = card_info(evo_id)
+            if evo.get("name") in hand:
+                continue
+            if any(not missing_energy(mon.get("energies"), attack_info(a).get("energies") or [])
+                   and (attack_info(a).get("damage") or 0) > 0 for a in evo.get("attacks") or []):
+                return True
+    return False
 
 
 def missing_engine(board):
