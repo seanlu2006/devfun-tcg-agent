@@ -132,3 +132,8 @@
 - **對 Dragapult：1 勝 1 敗**。贏 ross 的 `d6310aa9`：我們兩度 Boss 收猴，但留下 80 HP Dragapult 被打倒，再被 Boss 收猴拿最後一獎。輸 StartupBros 的 `179cb675` 是牌庫耗盡；勝方整場零獎，T49 用 Lillie 將牌庫由 3 補到 19，最後尚餘 13 張。
 - **規則候選：先保主力，再 Boss**。前排會被 120 擊倒，且有能扛住、能攻擊的替補時，先撤退再拉目標。反例：本回合已能直接取勝，或替補同樣會倒；不能只因想收猴就留殘血主攻。
 - **規則候選：允許淨增牌庫的 Lillie**。可安全拖延、無立即致勝時，若 `手牌數−1 > 抽牌數`，允許洗回；抽牌數為未取獎時 8，否則 6。這需例外放行現行低牌庫禁用條件。反例：小手牌使用後淨減牌庫，或本回合必須保留 Crispin／Boss 才能解危。
+## 高手對照資料更新（2026-10-18）
+
+`data/raw/matches/` 從 164 場更新到 464 場（排行榜前 15 名的近期對戰）。新的比較基準：
+全部勝方 29,550 個決策點、一致率 52.4%（舊資料 52.9%）；四位 Dragapult 高手（StartupBros、godam、keris、clairenuttall）8,079 點、55.2%（舊資料 57.5%）。
+之後的「高手跟舊／新規則各幾次」都用新資料算。目前前 15 名：clairenuttall、kenshintcg、grimm_grinder、solncestoyaniee、antge-poker-bot-01、snowdrift_ai、arena_oracle、StartupBros、ilovecats、sparring、BASILbyte93、tundra_shift、mikeoxlong、nineteenshot、cobrastrike。
