@@ -72,7 +72,9 @@ EX_IMMUNE_DEFENDERS = {"Crustle"}
 ENERGY_FETCH_CARDS = {"Crispin"}        # 從牌庫拿基本能量
 DISCARD_COST_CARDS = {"Ultra Ball": 2}   # 出牌時要先丟幾張手牌當代價
 RECOVERY_CARDS = {"Night Stretcher"}    # 從棄牌堆撿回寶可夢或基本能量
-EX_BLOCKING_STADIUMS = {"Neutralization Zone"}   # 競技場：ex 的招式對非 ex 沒有傷害（雙方都適用）
+EX_BLOCKING_STADIUMS = {"Neutralization Zone"}
+TERA_POKEMON = {"Dragapult ex"}            # 太晶寶可夢（精簡目錄沒有 tera 欄位；原始 cards.json 有，固定牌組先寫死）
+TERA_TAX_STADIUMS = {"Nighttime Mine"}     # 太晶寶可夢的招式多花 1 個無色   # 競技場：ex 的招式對非 ex 沒有傷害（雙方都適用）
 DRAW_SUPPORTERS = {"Lillie's Determination", "Lillie’s Determination", "Judge"}
 TURN_ENDING_ABILITIES = {"Lumiose City"}   # 用了就結束回合的特性（卡牌目錄沒有特性文字，只能寫死）
 ABILITY_ENERGY = {"Munkidori": 7}          # 特性要身上有這種能量才能用（Munkidori 的 Adrena-Brain 要惡能量）
@@ -678,6 +680,9 @@ def score_attach(board, option):
         if board.power_now(after) >= 60 and board.power_now(after) > board.power_now(target):   # 高手 4 比 0
             return SCORE["attach_needed_active"] + 2 + board.power_now(after) / 1000   # 打得越痛越優先
     missing = missing_energy(target.get("energies"), plan_cost(target.get("id")))
+    if not missing and tera_taxed(board, target):
+        # Nighttime Mine：太晶 Dragapult ex 的 Phantom Dive 多要 1 個無色（Codex 對手研究 5484d545 T6：火超齊了卻沒補第三個）
+        return SCORE["attach_needed_active"] + 2 if option.get("inPlayArea") == AREA_ACTIVE else SCORE["attach_needed_bench"]
     if not missing:
         return SCORE["attach_extra"]
     on_active = option.get("inPlayArea") == AREA_ACTIVE
@@ -765,6 +770,29 @@ def wall_attacker_ready(board):
     card = card_info((active or {}).get("id"))
     return facing_wall(board) and active and not (card.get("ex") or card.get("megaEx")) \
         and board.power_now(active) >= 60 and (active.get("hp") or 0) > board.opp_threat(active)
+
+
+def stadium_name(board):
+    stadium = (board.current.get("stadium") or [None])[0]
+    return card_info(card_id_of(stadium)).get("name") if stadium else None
+
+
+def tera_taxed(board, mon):
+    """Nighttime Mine 在場、這隻是太晶：計畫招式還差那 1 個多出來的無色能量。"""
+    if stadium_name(board) not in TERA_TAX_STADIUMS or card_info((mon or {}).get("id")).get("name") not in TERA_POKEMON:
+        return False
+    return len((mon or {}).get("energies") or []) < len(plan_cost(mon.get("id"))) + 1
+
+
+def cape_ko_after_tower(board):
+    """對手戰鬥場帶 Hero's Cape（+100 HP）：用 Jamming Tower 封掉後，這回合就打得倒。"""
+    opp = board.opp_active or {}
+    if not any(card_info(card_id_of(t)).get("name") in ("Hero’s Cape", "Hero's Cape") for t in opp.get("tools") or []):
+        return False
+    hp = opp.get("hp") or 0
+    dmg = max([board.damage_against(o.get("attackId"), board.my_active, opp) for o in board.options
+               if isinstance(o, dict) and o.get("type") == OPT_ATTACK] or [0])
+    return 0 < hp - 100 <= dmg < hp
 
 
 def needs_energy_to_retreat(board):
@@ -891,6 +919,16 @@ def score_play_card(board, option):
         if (board.opp.get("handCount") or 0) > 3:
             return SCORE["attack_ko"] + 9
         return SCORE["item"]
+    if name == "Jamming Tower" and cape_ko_after_tower(board):
+        # 封住 Hero's Cape，這回合就打得倒（Codex 對手研究 edebc9bd T15：290／440 的 Lucario 封後剩 190，Dive 200 收 3 獎）
+        return SCORE["evolve"] + 4
+    attack_names = {attack_info(o.get("attackId")).get("name") for o in board.options
+                    if isinstance(o, dict) and o.get("type") == OPT_ATTACK}
+    if card_type == CARD_STADIUM and stadium_name(board) in TERA_TAX_STADIUMS and board.my_active \
+            and not missing_energy(board.my_active.get("energies"), plan_cost(board.my_active.get("id"))) \
+            and "Phantom Dive" not in attack_names:
+        # Nighttime Mine 擋住了 Phantom Dive：換掉場地（Codex 對手研究 469a89f5 T16）
+        return SCORE["attack_ko"] + 9
     if card_type == CARD_STADIUM and (opp_stadium_blocks_spread(board) or opp_stadium_blocks_ex(board)):
         # 對手的 Battle Cage 會擋掉 Phantom Dive 放到備戰區的指示物 → 先用自己的競技場蓋掉
         # （Codex 敗局分析 db338914：三個回合的指示物都被擋，手上有 Jamming Tower 卻沒出）

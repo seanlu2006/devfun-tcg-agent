@@ -137,3 +137,157 @@
 `data/raw/matches/` 從 164 場更新到 464 場（排行榜前 15 名的近期對戰）。新的比較基準：
 全部勝方 29,550 個決策點、一致率 52.4%（舊資料 52.9%）；四位 Dragapult 高手（StartupBros、godam、keris、clairenuttall）8,079 點、55.2%（舊資料 57.5%）。
 之後的「高手跟舊／新規則各幾次」都用新資料算。目前前 15 名：clairenuttall、kenshintcg、grimm_grinder、solncestoyaniee、antge-poker-bot-01、snowdrift_ai、arena_oracle、StartupBros、ilovecats、sparring、BASILbyte93、tundra_shift、mikeoxlong、nineteenshot、cobrastrike。
+
+## 對手研究（二）：Alakazam 與 Mega Lucario（2026-10-18）
+
+本次全程唯讀，未修改檔案，也未執行對戰程式。最明確的策略缺口是 **Nighttime Mine 的額外攻擊費用**，以及 **Jamming Tower 封住 Hero’s Cape 後的擊倒線**。
+
+### 資料範圍與計數方式
+
+- `data/raw/scout/` 共 287 場，其中 160 場涉及本次六人。補入 `data/raw/matches/` 的 30 場、`data/runs/` 的 13 場，共 **203 場不重複相關對局**。
+- 按 `battle.players` 認人，不只讀取檔案的 `scouted` 標籤。牌表以公開卡的 serial 去重，再按玩家位置正規化卡位。**六人皆補齊 60 張，沒有卡位衝突。**
+- 以下勝敗均為該對手視角。T 是雙方累計回合；起動中位數只計算用過主攻的對局。攻擊時間採實際提交動作，避免 logs 顯示於下一回合造成偏移。
+- Dragapult 樣本包含實際使用 Dragapult ex 的玩家，以及已知固定牌表的 ross。只帶 Drakloak 當引擎的其他牌組不納入。
+- 全部本地實戰中，ross 對這四位 Alakazam 為 **6 勝 11 敗**；對這兩位 Lucario 為 **1 勝 3 敗**。這個範圍比題述的近期樣本大。
+
+### 已確認牌表
+
+以下共通牌表加上各人的差額，就是完整 60 張。Alakazam 指卡號 743；Abra／Kadabra 為 741／742，Shaymin 為 343。
+
+**A54：四位 Alakazam 共通的 54 張**
+
+| 類別 | 已確認卡片 |
+|---|---|
+| 寶可夢，18 張 | Abra×4、Kadabra×4、Alakazam×4、Dunsparce×3、Dudunsparce×2、Fezandipiti ex×1 |
+| 訓練家，30 張 | Rare Candy×3、Enhanced Hammer×4、Buddy-Buddy Poffin×4、Night Stretcher×1、Sacred Ash×1、Poké Pad×4、Boss’s Orders×3、Lana’s Aid×1、Xerosic’s Machinations×3、Hilda×3、Dawn×3 |
+| 能量，6 張 | 基本超×2、Telepath Psychic Energy×4 |
+
+**L60：hailstorm_ex 與 catnapper 完全相同的 60 張**
+
+| 類別 | 已確認卡片 |
+|---|---|
+| 寶可夢，14 張 | Riolu×4、Mega Lucario ex×4、Lunatone×3、Solrock×3 |
+| 訓練家，31 張 | Buddy-Buddy Poffin×4、Hand Trimmer×2、Night Stretcher×1、Switch×1、Fighting Gong×4、Mega Signal×4、Poké Pad×2、Hero’s Cape×1、Boss’s Orders×3、Xerosic’s Machinations×2、Hilda×2、Lillie's Determination×4、Gravity Mountain×1 |
+| 能量，15 張 | 基本鬥×11、Rock Fighting Energy×4 |
+
+### cibinesia：Alakazam（17 勝 16 敗）
+
+- **牌表**：A54＋Shaymin×1、Enriching Energy×1、Hilda×1、Dawn×1、Nighttime Mine×2。
+- **開局與速度**：Abra／Dunsparce 起手，另有鳥、Shaymin 起手。搜尋與進化抽牌累積手牌；Powerful Hand 最快 T4，中位 T5。
+- **攻擊與干擾**：一超放 `20×自己的手牌數` 個傷害點。Mine 增加太晶攻擊費用，Xerosic 削手；Stretcher／Sacred Ash／Lana 回收進化線。
+- **怎麼輸**：16 敗含取獎 11、清場 4、抽光 1。`3b5574bb` 的 frost 從 T8 連打三次 Dive，正面收 Alakazam，後排收 Abra，再收 Dudunsparce／Dunsparce。
+- **對 Dragapult：4 勝 4 敗**。對 ross 為 4 勝 3 敗，另輸 frost。ross 的 `e2f35b50` 先 Stamp，再於 T6／8／10 連打 Dive；另兩勝是早期清場。敗局 `5484d545` 則整場沒有 Dive。
+- **具體規則**：Mine 在場、Pult 已有火超各一，第三能或蓋塔能開 Dive時，優先解費用。反例：Alakazam 本身不是太晶，不應替它加費。
+
+### allinwolf2：Alakazam（19 勝 20 敗）
+
+- **牌表**：A54＋Night Stretcher×1、Colress’s Tenacity×2、Neutralization Zone×1、Nighttime Mine×1、基本超×1。
+- **開局與速度**：主要 Abra／Dunsparce 起手，Telepath 協助鋪超系基本。小招最快 T2；Powerful Hand 最快 T3，中位 T5。
+- **攻擊與干擾**：依手牌數放指示物，搭配三張 Xerosic、三張 Boss。Zone 擋 ex 正面傷害；Mine 加費。回收牌讓進化線能重建。
+- **怎麼輸**：20 敗含取獎 17、清場 2、抽光 1。`40c77989` 的 StartupBros 先用 Budew，T6／8／10 連打 Dive；收 Abra、蓋塔、Stamp，最後 Boss 收鳥。
+- **對 Dragapult：3 勝 2 敗**。對 ross 為 3 勝 1 敗，另輸 StartupBros。ross 的 `0c9c9351` 到 T9 才 Dive；`553cceb5` 雖 T6 起攻，後續沒能連打。勝局 `246259b4` 是 T3 用 Drakloak 收唯一 Abra。
+- **具體規則**：Zone 正在擋正面傷害，而且蓋塔後能有效攻擊，就先解除。反例：仍缺必要能量，且蓋塔後也無有效攻擊，不把蓋塔當成完成解場。
+
+### gastonhoma：Alakazam（18 勝 28 敗）
+
+- **牌表**：A54＋Shaymin×1、Enriching Energy×1、Hilda×1、Dawn×1、基本超×2；**沒有競技場**。
+- **開局與速度**：較常 Dunsparce 起手，再鋪 Abra、走進化抽牌。Powerful Hand 最快 T3，中位 T6。
+- **攻擊與干擾**：同樣靠大手牌輸出，Enhanced Hammer／Xerosic 干擾；Stretcher、Sacred Ash、Lana 回收。沒有 Mine／Zone 封鎖。
+- **怎麼輸**：28 敗含取獎 13、清場 5、棄權 9、超時 1。棄權不能當戰術勝例。`16f19897` 的 keris 連續五次 Dive，配合 Judge，正面收進化型並拆後排。
+- **對 Dragapult：3 勝 4 敗**。對 ross 為 3 勝 1 敗；另輸 keris、clurit、antge。ross 勝局 `f11974a7` 在 T5 一次 Dive 收前排 Kadabra、後排 Abra，直接清場。
+- **具體規則**：Dive 可用、後排 Abra 剩餘 HP≤60 時，集中收掉進化起點。反例：滿血 Kadabra 為 80 HP，只有 60 指示物不能算已斷線。
+
+### blazewolf：Alakazam（15 勝 21 敗）
+
+- **牌表**：與 allinwolf2 相同，都是 A54＋Stretcher×1、Colress×2、Zone×1、Mine×1、基本超×1。
+- **開局與速度**：Abra／Dunsparce 起手，搜尋後進化。小招最快 T2；Powerful Hand 最快 T3，中位 T5。
+- **攻擊與消耗**：大手牌指示物、Boss／Xerosic，另有 Zone／Mine。回收牌支持持續重建。
+- **怎麼輸**：21 敗含取獎 14、清場 4、抽光 3。`0d8ff5b6` 的 antge 用 Stamp、Judge 壓手，持續 Dive 收進化線。
+- **對 Dragapult：1 勝 2 敗**。對 ross 為 1 勝 1 敗，另輸 antge。ross 兩場都 T5 首次 Dive，起攻時間不足以解釋勝負；勝局 `92bd007a` 後段用 Judge 把 23 張手牌壓到 4，再由非 ex 猴收最後一獎。
+- **具體規則**：Zone 留場時，若非 ex 猴／Drak 能收目前目標，且換位後仍能攻擊，就切換。反例：非 ex 傷害仍不足，或換位路線無法完成，不為繞牆盲目撤退。
+
+### hailstorm_ex：Mega Lucario（14 勝 16 敗）
+
+- **牌表**：L60。與 jade_yak_3292 相比，沒有 Hariyama 線，加入 Hand Trimmer、Switch、Stretcher、Gravity Mountain。
+- **開局與速度**：多由 Riolu 起手，鋪月石／太陽岩，搜尋 Mega 進化。小招最快 T2；Lucario 主攻最快 T3，中位 T4。
+- **攻擊與干擾**：Aura Jab 一鬥 130，並回填最多三張棄牌基本鬥；Mega Brave 兩鬥 270，同隻下回合不能再用。Boss 抓獎、削手、輪替 Lucario；沒有專用回血卡。
+- **怎麼輸**：16 敗含取獎 12、抽光 3、清場 1。敗局有被拆兩隻 Mega，也有對手改收月石／太陽岩；不能一律照抄正面互打。
+- **對 Dragapult：2 勝 1 敗，全對 ross**。勝方 `a2a5ce50` 在 T7／9／11 連打 Dive，先處理月石，再集中傷害於可受指示物的殘血 Lucario；T13 猴以弱點 120 收最後 80 HP。敗局則曾早掉鳥或帶能 Drak。
+- **具體規則**：後排 Lucario 的 Rock Fighting Energy 還在時，不分配 Dive 指示物；正面傷害仍可計算。反例：岩鬥已離場，就重新納入指示物目標。
+
+### catnapper：Mega Lucario（14 勝 16 敗）
+
+- **牌表**：L60，與 hailstorm_ex 的 60 張完全一致。
+- **開局與速度**：Riolu、月石、太陽岩皆會起手，接搜尋與 Mega 進化。小招最快 T2；Lucario 主攻最快 T3，中位 T4。
+- **攻擊與干擾**：Aura Jab 養第二隻，交替 Mega Brave／Aura Jab；三張 Boss、Hand Trimmer／Xerosic 干擾。靠輪替與 Stretcher 回收，沒有專用回血卡。
+- **怎麼輸**：16 敗含取獎 14、抽光 1、清場 1。`0ad1d246` 的 Alakazam 主要拆月石／太陽岩；`4af30535` 的鏡像則擊倒兩隻 Mega 取六獎。
+- **對 Dragapult：1 勝 0 敗，只有 ross**。`edebc9bd` 我們 T4 先掉帶火超的 Drak，直到 T15 才 Dive；當時對面披風 Lucario 剩 290 HP，手上有塔卻直接打 200。沒有其他 Dragapult 勝例。
+- **具體規則**：封披風後，本回合可從打不倒變成擊倒，就先塔後攻。反例：滿血 440→340，仍超過 200，不能當成立即三獎。
+
+### 所有玩家適用的共通對策
+
+**兩派都適用**
+
+- **有擊倒線才為斷進化投入 Boss。** Drakloak 的 70 可收 Abra／Riolu；Dive 後排 60 可收滿血 Abra，收不了滿血 70 HP Riolu。若必須先 Crispin 才能攻擊，就不能先耗掉支援者額度。
+- **避免無收益地鋪二獎配角。** 主攻與引擎已齊、當下不需要特性時，保留鳥／Meowth。例外是不鋪會被清場，或必須靠其特性完成本回合攻擊。
+- **維持連續攻擊。** 這批 Dragapult 勝例常見連續 Dive。只有首次起攻早還不夠；blazewolf 的兩場 ross 對局就是反例。
+
+**四位 Alakazam 共通**
+
+- Powerful Hand 是**每張自己的手牌放兩個指示物**。16 張就是 320，不套弱點／抗性。Judge／Stamp 同時削手與降火力。
+- 判斷下一擊至少加上回合抽牌。Judge 壓到 4 後，對手開回合已有 5 張；進化抽牌還能繼續增加。不能把下一擊固定當成 80。
+- 正面 Alakazam 140 HP 可被 Dive 收走；後排 Abra 50 HP 可順便斷線。Shaymin 防的是招式「傷害」，不擋 Dive 的指示物。
+- **Mine／Zone 不是四人共通配置。** gastonhoma 沒有競技場；cibinesia 沒有 Zone。規則應辨識盤面效果。
+
+**Lucario 共通，包含已研究的 jade_yak_3292**
+
+- Mega Lucario 倒下送三獎，但滿血 340 超過一次 Dive。優先比較「收殘血 Mega」與「正面打滿血 Mega」的收益。
+- **分開判斷岩鬥與披風。** 岩鬥擋對鬥系持有者的招式效果，不擋正面傷害；塔封的是道具，不能解除岩鬥。猴的移傷是特性，也不能混成 Dive 一起封掉。
+- 鳥弱鬥，Aura Jab 可打 260。對方已有可攻擊 Lucario 時，不為沒有立即收益的抽牌能力增加二獎目標。
+- Aura Jab 能養備戰攻擊手。拆掉前排一顆能量，不代表下一回合一定停攻；還要看手貼與候補。
+- 新兩人的 Gravity Mountain 會讓 Pult 少 30 HP。這張不是 jade 牌表的共通項目。
+
+### 現行 strategy.py 缺少的三項規則
+
+現行已處理 Judge 防致命手牌傷害、Stamp 優先、Boss 收殘血三獎、岩鬥指示物免疫。以下三項才是本次確認的新缺口。
+
+| 規則／函式 | 觸發條件與動作 | 不該觸發的反例 |
+|---|---|---|
+| **計算 Mine 加費**：新增 `effective_attack_cost()`；接入 `score_attach()`、能量需求與戰力判斷 | Mine 在場、我方為太晶 Pult，Phantom Dive 成本應為火＋超＋無色。已有火超各一、可手貼時，第三顆能量要視為必要補能。本次最小補丁評為 87，保留進化／特性優先 | 非太晶不加費；已有第三顆能量不再補。不能把所有二階寶可夢都套上加費 |
+| **蓋 Mine 開啟 Dive**：`score_play_card()` | 塔合法、Mine 在場、前排 Pult 火超已齊，但合法招式沒有 Dive；且沒有本回合直接取勝的攻擊，就提高蓋塔優先度至 69 | 已能合法 Dive，或仍缺火／超時，不因 Mine 名稱就優先蓋塔 |
+| **封披風形成擊倒線**：`score_play_card()` | 對面前排有生效披風，`0 < HP−100 ≤ 本回合合法傷害 < HP`，就優先塔；本次評為 94。封披風直接歸零也可納入 | 披風已被封、沒有合法攻擊、封後仍打不倒，均不算立即擊倒；已有直接致勝攻擊則先取勝 |
+
+Mine 的原文是「太晶寶可夢招式多花一無色」，見 `data/raw/cards.json`。目前 `assets/catalog.json` 沒帶 `tera` 旗標，正式實作時須補資料，或先限定固定牌組的 Dragapult ex。
+
+披風扣血也有引擎證據。`0c86d782` 在塔進場後，滿血 Mega Starmie 從 430／430 變為 330／330。這不是只按卡文推算。
+
+### 記憶體重跑證據
+
+讀取 `data/runs/*_obs.jsonl`，依 `(matchId, seq)` 去重。共 **21 場、1,586 個真實決策點**。比較現行 `act()` 與記憶體中的最小評分補丁；沒有改檔或啟動對戰。
+
+| 規則 | 真實決策點 | 現行選擇 → 候選選擇 | 盤面意義 |
+|---|---|---|---|
+| Mine 第三能 | `5484d545`，T6／seq 50 | `[1]` 貼火給備戰 Drak → `[0]` 貼給前排 Pult | 前排已有火超，但 Mine 下還差一無色。補前排才能開 Dive，擊倒 80 HP Kadabra |
+| 蓋 Mine | `469a89f5`，T16／seq 167 | `[1]` Jet Headbutt → `[0]` Jamming Tower | 前排火超齊；原本只有 70。蓋塔後可用 Dive 收 140 HP Alakazam |
+| 封披風 | `edebc9bd`，T15／seq 135 | `[3]` Phantom Dive → `[0]` Jamming Tower | Lucario 為 290／440；封披風後 190／340，進入 200 擊倒線。岩鬥不擋這段正面傷害 |
+
+原始紀錄位置：
+
+- Mine 補能：`run_20261018_143215_obs.jsonl`，第 278 行。
+- 蓋 Mine：`run_20261018_091809_obs.jsonl`，第 698 行。
+- 封披風：`run_20261018_143215_obs.jsonl`，第 619 行。
+
+三項合併後，**14 個快照改選，涉及三場、九個回合**。其中補能改七點、蓋 Mine 改五點、封披風改兩點。所有新選擇都在原始合法動作內；反例條件也已做斷言檢查。
+
+這是同一快照重新選動作，**不是改選後重演整場**。同回合的多個快照也不是獨立收益，不能宣稱三場會翻勝。
+
+### 四位高手對照
+
+使用 `tests/agreement.py --handles StartupBros,godam,keris,clairenuttall` 的資料與相同篩選方式：
+
+| 版本 | 決策點 | 與高手一致 | 一致率 |
+|---|---:|---:|---:|
+| 現行策略 | 8,079 | 4,457 | 55.17% |
+| 三項記憶體補丁合併 | 8,079 | 4,457 | 55.17% |
+
+本次高手資料**沒有產生改選點**。公開手牌遮蔽，也限制了塔的牌名分支判斷。因此這項對照只能說基準沒有變動，不能證明候選更好。採用依據是卡文、引擎實例與上述實戰選擇差異；勝率效果仍待後續對局驗證。
