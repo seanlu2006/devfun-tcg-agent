@@ -813,6 +813,26 @@ def pointless_support_attach(board, target, energy_type, option):
         card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS for c in board.me.get("hand") or [])
 
 
+def evolvable_base_without_engine(board):
+    """場上有「不是本回合才放下」的 Dreepy（可以進化），但全場沒有 Drakloak／Dragapult，手上也沒有 Drakloak。"""
+    names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
+    hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
+    ready_base = any(card_info(m.get("id")).get("basic") and EVOLVES_INTO.get(card_info(m.get("id")).get("name"))
+                     and not m.get("appearThisTurn") for m in board.my_pokemon())
+    return ready_base and not any(card_info(m.get("id")).get("stage1") or card_info(m.get("id")).get("stage2")
+                                  for m in board.my_pokemon()) and "Drakloak" not in hand and len(names) >= 2
+
+
+def second_engine_wanted(board):
+    """戰鬥場是全場唯一的 Drakloak、沒有 Dragapult，備戰區有能進化的 Dreepy、手上沒有 Drakloak。"""
+    names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
+    hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
+    active = card_info((board.my_active or {}).get("id")).get("name")
+    return active == "Drakloak" and names.count("Drakloak") == 1 and "Dragapult ex" not in names \
+        and "Drakloak" not in hand and any(card_info(m.get("id")).get("name") == "Dreepy" and not m.get("appearThisTurn")
+                                           for m in board.me.get("bench") or [])
+
+
 def holds_evolution_chain(board):
     """手上的進化卡能接上場上的寶可夢（Dreepy＋手上 Drakloak；或 Drakloak＋手上 Dragapult ex）。"""
     in_play = board.names_in_play()
@@ -901,6 +921,10 @@ def score_play_card(board, option):
     if name in DISCARD_COST_CARDS and not can_afford_discard(board, option.get("index", 0), DISCARD_COST_CARDS[name]):
         # 2026-10-18 第 6 批：手上只剩 Poké Pad 和 Drakloak 還出 Ultra Ball，丟掉 Drakloak 去搜另一張 Drakloak
         return -1
+    if name == "Poké Pad" and second_engine_wanted(board) and not wall_in_play(board) \
+            and (board.me.get("deckCount") or 0) > LOW_DECK:
+        # 攻擊（拿 1 獎）會結束回合：先搜第二隻 Drakloak（Codex 敗局分析 15fe306c T3：唯一的 Drakloak 隔回合被打倒）
+        return SCORE["attack_ko"] + 7
     if name in EVOLUTION_SEARCH_CARDS and (missing_engine(board) or (ready_upgrade(board) and name == "Ultra Ball")) \
             and missing_evolution(board, name):
         return SCORE["evolve"] - 3   # 場上有 Dreepy 卻沒有任何 Drakloak：先把找牌引擎搜出來（Codex 對局分析 76378bdb）
@@ -1323,6 +1347,8 @@ def want_value(board, card_id, in_hand=False):
         return None
     in_play = board.names_in_play()
     if card.get("cardType") == CARD_POKEMON:
+        if card.get("name") == "Drakloak" and not in_hand and evolvable_base_without_engine(board):
+            return 96   # 能馬上進化、開始找牌，比多一隻 Dreepy 有用（Codex 敗局分析 15fe306c T5）
         if card.get("basic") and board.bench_space() > 0 and len(board.my_pokemon()) < THIN_BENCH:
             # 場上不到 3 隻：先拿能馬上放下的基礎寶可夢，比進化卡優先（2026-10-18 第 9 批：場上只有 Budew＋剛放下的
             # Dreepy，Ultra Ball 搜 Drakloak（這回合本來就不能進化），被快攻一回合打倒一隻，第 6、8 回合就沒寶可夢判輸）
@@ -1359,6 +1385,10 @@ def want_value(board, card_id, in_hand=False):
     if card.get("cardType") == CARD_SUPPORTER:
         if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):
             return 85   # 缺能量又還沒用支援者：Crispin 一張補 2 個能量（Codex 敗局分析 c0e4aafc、d601a6ff）
+        if card.get("name") in ENERGY_FETCH_CARDS and (energy_starved(board) or active_color_starved(board)) \
+                and not any(board.power_now(m) >= 60 for m in board.my_pokemon()) \
+                and not any(card_info(card_id_of(c)).get("name") in ENERGY_FETCH_CARDS for c in board.me.get("hand") or []):
+            return 85   # 這回合支援者用過了也要拿：留到下回合補色（Codex 敗局分析 4dac34d0 T7：Meowth 搜了 Boss）
         if card.get("name") in DRAW_SUPPORTERS and (energy_starved(board) or active_color_starved(board)) \
                 and not board.current.get("supporterPlayed") \
                 and not any(card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS | ENERGY_FETCH_CARDS
