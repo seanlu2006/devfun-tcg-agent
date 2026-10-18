@@ -16,3 +16,6 @@ data/runs/
 
 # 工具產生的分析結果（可隨時重跑，不進 git）
 data/*.json
+
+# A/B 測試時取出的舊版策略
+.ab_strategies/

@@ -53,8 +53,9 @@ def prizes_taken(match, agent_index):
 
 
 def main():
-    me = json.loads((ROOT / ".arena-credentials").read_text())["agentId"]
     state = json.loads((ROOT / ".arena-tcg-state").read_text())
+    # agentId 由 run_agent.py 記在狀態檔；舊狀態檔還沒有時才退回讀金鑰檔
+    me = state.get("agentId") or json.loads((ROOT / ".arena-credentials").read_text())["agentId"]
     matches = state.get("matches") or []
     if len(sys.argv) > 1:
         matches = matches[-int(sys.argv[1]):]

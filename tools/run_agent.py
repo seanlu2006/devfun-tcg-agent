@@ -12,6 +12,10 @@ TCG Playground S3 是 owner-hosted（executionMode＝remote），不是上傳 bu
   python3 tools/run_agent.py --deck decks/xxx.json --max-matches 3      第一次加入（會鎖定牌組）
   python3 tools/run_agent.py --max-matches 10                           之後再打（牌組已鎖定，不用再給）
   python3 tools/run_agent.py --base http://127.0.0.1:8765/api/arena ...  連本機模擬伺服器（tests/mock_arena.py）
+  python3 tools/run_agent.py --max-matches 40 --ab <commit 或分支>        A/B：目前版本（A）和指定版本（B）一場一場輪流上場
+
+為什麼要 A/B：平台按實力配對，不同時段碰到的對手強度差很多（2026-10-19 檢討：對手分數中位數 351→520），
+所以「這批勝率 vs 上一批勝率」不能比。同一時段輪流上場，兩邊碰到的對手才一樣，結果用 tools/ab_report.py 看。
 """
 import argparse
 import hashlib
@@ -52,11 +56,29 @@ def version_info(deck):
     return {"git": sha + ("+未commit" if dirty else ""), "strategy": strategy_hash, "deck": deck_hash}
 
 
-def load_strategy():
-    spec = importlib.util.spec_from_file_location("strategy", ROOT / "harness" / "strategy.py")
+def load_strategy(path=None, name="strategy"):
+    spec = importlib.util.spec_from_file_location(name, path or ROOT / "harness" / "strategy.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_ab_strategy(ref):
+    """把某個 commit／分支的 harness/strategy.py 取出來載入（B 組）。回傳 (module, 版本資訊)。"""
+    sha = subprocess.run(["git", "rev-parse", "--short", ref], cwd=ROOT, capture_output=True, text=True,
+                         timeout=10).stdout.strip()
+    source = subprocess.run(["git", "show", f"{ref}:harness/strategy.py"], cwd=ROOT, capture_output=True,
+                            timeout=10).stdout
+    if not sha or not source:
+        sys.exit(f"--ab {ref}：找不到這個版本的 harness/strategy.py")
+    # 放在 repo 根目錄下一層：strategy.py 用「自己所在資料夾/../assets/catalog.json」找卡牌資料
+    path = ROOT / ".ab_strategies" / f"strategy_{sha}.py"
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(source)
+    module = load_strategy(path, f"strategy_{sha}")
+    if not module.CARDS:
+        sys.exit(f"--ab {ref}：B 組讀不到卡牌資料（catalog），不能上場")
+    return module, {"git": sha, "strategy": hashlib.sha256(source).hexdigest()[:10]}
 
 
 def is_transient(status, code):
@@ -76,6 +98,33 @@ class Runner:
         self.log_path = RUN_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
         self.obs_path = self.log_path.with_name(self.log_path.stem + "_obs.jsonl")
         self.version = version_info(self.state.get("deck"))
+        # A/B：每場第一次出現時決定用哪一組，A、B 輪流（self.arms[matchId] = "A" 或 "B"）
+        self.arms, self.ab = {}, None
+        if args.ab:
+            module, info = load_ab_strategy(args.ab)
+            self.ab = {"A": (self.strategy, dict(self.version, arm="A")),
+                       "B": (module, dict(self.version, **info, arm="B"))}
+        # 檢討工具要知道哪一邊是我們：記 agentId 到狀態檔，之後就不用再去讀金鑰檔
+        agent_id = ac.load_credentials().get("agentId")
+        if agent_id and self.state.get("agentId") != agent_id:
+            self.state["agentId"] = agent_id
+            ac.save_state(self.state)
+
+    def arm(self, match_id):
+        """這場用哪一組（沒開 A/B 就是 None）。輪流分配，兩組場數最多差 1。"""
+        if not self.ab:
+            return None
+        if match_id not in self.arms:
+            self.arms[match_id] = "AB"[len(self.arms) % 2]
+        return self.arms[match_id]
+
+    def strategy_for(self, match_id):
+        arm = self.arm(match_id)
+        return self.ab[arm][0] if arm else self.strategy
+
+    def version_for(self, match_id):
+        arm = self.arm(match_id)
+        return self.ab[arm][1] if arm else self.version
 
     def log(self, **event):
         event["t"] = time.strftime("%H:%M:%S")
@@ -134,16 +183,17 @@ class Runner:
     # ---------------------------------------------------------------- 回答一個決策點
     def answer(self, pending):
         legal = pending.get("legalActions") or []
+        strategy = self.strategy_for(pending["matchId"])
         context = {"observation": pending.get("obs") or {}, "legalActions": legal}
         started = time.time()
         deadline = pending.get("deadline") or 0
         if deadline and deadline - time.time() * 1000 < DEADLINE_MARGIN_MS:
-            action = self.strategy.safe_default(legal)
+            action = strategy.safe_default(legal)
         else:
-            action = self.strategy.act(context)
+            action = strategy.act(context)
         status, data = self.post_action(pending, action)
         if status == 422:  # 不合法：重讀這個決策點、送保底動作一次
-            action = self.strategy.safe_default(legal)
+            action = strategy.safe_default(legal)
             status, data = self.post_action(pending, action)
         select = (context["observation"].get("select") or {})
         self.log(event="action", matchId=pending["matchId"], seq=pending["seq"], action=action,
@@ -172,10 +222,11 @@ class Runner:
     def finish_match(self, match_id, match_status):
         self.matches_done += 1
         self.state["matches"].append({"matchId": match_id, "status": match_status,
-                                      "at": time.strftime("%Y-%m-%d %H:%M:%S"), "version": self.version})
+                                      "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                      "version": self.version_for(match_id)})
         ac.save_state(self.state)
         print(f"第 {self.matches_done} 場結束（{match_status}）：{match_id}")
-        self.log(event="match_end", matchId=match_id, status=match_status)
+        self.log(event="match_end", matchId=match_id, status=match_status, arm=self.arm(match_id))
 
     # ---------------------------------------------------------------- 主迴圈
     def should_stop(self):
@@ -236,6 +287,7 @@ def main():
     parser.add_argument("--base", help="改連別的伺服器（例如本機模擬伺服器）")
     parser.add_argument("--state", help="改用別的狀態檔（測試用，避免動到真正的 .arena-tcg-state）")
     parser.add_argument("--credentials", help="改用別的金鑰檔（測試用）")
+    parser.add_argument("--ab", help="A/B 測試：這個 commit／分支當 B 組，跟目前版本（A 組）一場一場輪流上場")
     parser.add_argument("--log-dir", help="記錄檔改寫到別的資料夾（測試用，避免混進真實對戰紀錄）")
     args = parser.parse_args()
     if args.base:
@@ -257,7 +309,8 @@ def main():
         print("\n收到 Ctrl-C：打完這一場就停（再按一次會立刻離開）")
     signal.signal(signal.SIGINT, on_sigint)
 
-    print(f"記錄檔：{runner.log_path}｜版本 {runner.version}")
+    print(f"記錄檔：{runner.log_path}｜版本 {runner.version}"
+          + (f"｜A/B：B 組 {runner.ab['B'][1]}" if runner.ab else ""))
     runner.run()
 
 

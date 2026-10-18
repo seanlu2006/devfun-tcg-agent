@@ -6,6 +6,7 @@
   2. 「在對手那一步結束」的那場也有被算進去（雙數場）
   3. 送出的每個動作都合法、沒有被伺服器拒絕
   4. 狀態檔記下牌組已鎖定；第二次執行不帶 --deck 也能加入（不會被 payload_locked 卡住）
+  5. --ab：兩場分別記成 A 組、B 組，B 組記的是指定的舊版 commit；狀態檔記下 agentId
 用法：python3 tests/runner_e2e.py
 """
 import json
@@ -54,6 +55,17 @@ def main():
         if second.returncode != 0 or arena.match_no != 3:
             failures.append(f"第二次執行（不帶 --deck）應該能加入並打 1 場：rc={second.returncode}、場數={arena.match_no}、"
                             f"{second.stderr.strip()[-300:]}")
+
+        third = run_agent(base, tmp, ["--max-matches", "2", "--ab", "98977b2"])
+        print(third.stdout.strip())
+        state = json.loads((tmp / "state.json").read_text())
+        arms = [(m.get("version") or {}).get("arm") for m in state["matches"][-2:]]
+        b_git = [(m.get("version") or {}).get("git") for m in state["matches"][-2:] if (m.get("version") or {}).get("arm") == "B"]
+        if third.returncode != 0 or sorted(arms) != ["A", "B"] or b_git != ["98977b2"]:
+            failures.append(f"--ab 應該一場 A、一場 B（B＝98977b2）：rc={third.returncode}、arms={arms}、B={b_git}、"
+                            f"{third.stderr.strip()[-300:]}")
+        if state.get("agentId") != "mock-agent":
+            failures.append(f"狀態檔應該記下 agentId：{state.get('agentId')}")
     server.shutdown()
 
     if failures:
