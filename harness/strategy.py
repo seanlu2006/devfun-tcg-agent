@@ -632,8 +632,11 @@ def score_main_option(board, option):
 
     if kind == OPT_RETREAT:
         # 備戰區有明顯更強、而且現在就能打的 → 撤退換牠上來
-        if board.better_attacker_on_bench() or board.healthy_swap_available() or board.save_evolution_line() \
-                or board.losing_swap_available():
+        if board.healthy_swap_available():
+            # 先保住殘血主力再 Boss：Boss 拉上新目標後，這個條件可能就不成立了
+            # （Codex 敗局分析 d6310aa9 T15：先 Boss，留場的 80 HP Dragapult 被打倒送 2 獎）
+            return SCORE["attach_needed_active"] + 2
+        if board.better_attacker_on_bench() or board.save_evolution_line() or board.losing_swap_available():
             return SCORE["retreat_ready"]
         return -10
 
@@ -783,6 +786,8 @@ def score_play_card(board, option):
                 return SCORE["attack_ko"]
         if targets and board.can_attack_now(board.my_active):
             best_bench = max(prize_value(m.get("id")) for m in targets)
+            if best_bench >= len(board.opp.get("prize") or [0] * 6):
+                return SCORE["evolve"] + 5   # 拉上來打倒就贏了
             opp = board.opp_active
             active_ko = opp and 0 < (opp.get("hp") or 0) <= board.max_damage_vs(opp)
             if active_ko and prize_value(opp.get("id")) >= best_bench:
@@ -892,6 +897,11 @@ def score_play_card(board, option):
             return -1   # 用完牌庫會變 0（Codex 對局分析 308e86ac T31：牌庫 1 張還出 Lillie's）
         if wall_attacker_ready(board) and draw_n > len(board.me.get("hand") or []) - 1:
             return -1   # 牆對局、攻擊手已在打：會淨減牌庫的 Lillie's 先不用
+        if active_color_starved(board) and len(board.me.get("hand") or []) <= 2 \
+                and not board.current.get("energyAttached"):
+            # 戰鬥場缺一種顏色、還能手貼、手牌只剩這麼少：先抽，不要為了 1 獎的小攻擊跳過
+            # （Codex 敗局分析 86ccb9d7 T13：手牌只剩 Budew＋Lillie's，直接 Jet Headbutt）
+            return SCORE["attack_ko"] + 7
     if card_type == CARD_SUPPORTER:
         # 主力缺顏色、手上又補不上：抽牌（Lillie's 等）優先於 Dawn 這類搜寶可夢的（55）
         # （Codex 對局分析 f6698511 T13：先用 Dawn，支援者額度用掉，看到的 Crispin 用不了）
@@ -1286,6 +1296,15 @@ def recoverable_value(board):
     return False
 
 
+def my_supporter_used(board):
+    """這回合「我們」用過支援者了嗎。對手的效果（Xerosic 逼丟牌）出題時，supporterPlayed 記的是對手的
+    （Codex 敗局分析 86ccb9d7 T2：被當成我們用過，丟掉唯一的 Lillie's）。"""
+    effect = board.select.get("effect") or {}
+    if effect.get("playerIndex") is not None and effect.get("playerIndex") != board.my_index:
+        return False
+    return bool(board.current.get("supporterPlayed"))
+
+
 def hand_count(board, name):
     return sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") == name)
 
@@ -1299,7 +1318,7 @@ def keep_value(board, card_id):
     if value is None:
         return 50
     card = card_info(card_id)
-    if card.get("name") in DRAW_SUPPORTERS and not board.current.get("supporterPlayed") \
+    if card.get("name") in DRAW_SUPPORTERS and not my_supporter_used(board) \
             and sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS) == 1:
         return 75
     if card.get("name") in ENERGY_FETCH_CARDS and hand_count(board, card.get("name")) == 1:
@@ -1322,7 +1341,7 @@ def discard_penalty(board, picked_ids):
     penalty = 0
     draw_in_hand = sum(1 for c in board.me.get("hand") or [] if card_info(card_id_of(c)).get("name") in DRAW_SUPPORTERS)
     draw_picked = sum(1 for c in picked_ids if card_info(c).get("name") in DRAW_SUPPORTERS)
-    if draw_in_hand and draw_picked >= draw_in_hand and not board.current.get("supporterPlayed"):
+    if draw_in_hand and draw_picked >= draw_in_hand and not my_supporter_used(board):
         penalty += ALL_COPIES_PENALTY   # 丟光所有抽牌支援者（Codex 敗局分析 12972564：兩張 Lillie's 一起丟）
     for name in {card_info(c).get("name") for c in picked_ids}:
         copies = hand_count(board, name)
