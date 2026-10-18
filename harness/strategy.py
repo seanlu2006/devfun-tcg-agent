@@ -1539,6 +1539,8 @@ def want_value(board, card_id, in_hand=False):
                     if m and 0 < (m.get("hp") or 0) <= board.max_damage_vs(m)] or [0])
         if best > active_prizes:
             return 94   # 備戰區有現在就打得倒、獎賞卡更多的 → 拿 Boss（Codex 敗局分析 5e464d31：放過 130 HP 的 Mega Lucario）
+    if card.get("name") == "Judge" and judge_search_saves(board, in_hand):
+        return 94
     if card.get("cardType") == CARD_SUPPORTER:
         if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):
             return 85   # 缺能量又還沒用支援者：Crispin 一張補 2 個能量（Codex 敗局分析 c0e4aafc、d601a6ff）
@@ -1557,6 +1559,21 @@ def want_value(board, card_id, in_hand=False):
     if card.get("name") in DISRUPTION_CARDS:
         return 20
     return 30
+
+
+def judge_search_saves(board, in_hand=False):
+    """搜牌時先拿 Judge：前排已經能攻擊、對手的 Powerful Hand 下回合打得倒它（Judge 後就打不倒），
+    而且對手備戰區還有另一隻付得起 Powerful Hand 的——打倒前排也解除不了威脅。
+    （Codex Alakazam 研究 4d1ee5b8 T9：前排 Dragapult 火超備好、對手 21 張手牌、後排有帶能 Alakazam，
+     Meowth 卻搜 Crispin，下回合前排吃 480）"""
+    if in_hand or board.current.get("supporterPlayed") or not board.can_attack_now(board.my_active):
+        return False
+    if any(card_info(card_id_of(c)).get("name") == "Judge" for c in board.me.get("hand") or []):
+        return False
+    if not board.judge_saves_active():
+        return False
+    return any(board.hand_counter_damage(a, 1) and not missing_energy(m.get("energies"), attack_cost(board, m, a))
+               for m in board.opp.get("bench") or [] if m for a in card_info(m.get("id")).get("attacks") or [])
 
 
 def needed_colors(board):
@@ -1636,6 +1653,11 @@ def keep_value(board, card_id):
         return 75
     if card.get("name") in ENERGY_FETCH_CARDS and hand_count(board, card.get("name")) == 1:
         return 75   # 唯一的 Crispin 別丟（Codex 對局分析 7fbdf3b8 T1：丟了 Crispin，首次 Phantom Dive 拖到 T13）   # 唯一的抽牌支援者別丟（Codex 敗局分析 6a4693e4：Ultra Ball 丟了唯一的 Lillie's，之後兩回合停機）
+    if card.get("name") == "Unfair Stamp" and (board.opp.get("handCount") or 0) >= 8 and opp_has_hand_attack(board):
+        # 對手靠手牌張數打傷害、手上 8 張以上：Stamp 是保命牌，別在 Ultra Ball／Xerosic 丟牌時丟掉
+        # （Codex Alakazam 研究：93ce1e07 T5 丟了 Stamp、2c60be35 T8 被 Xerosic 逼丟 Stamp，之後主力都被一擊打倒；
+        #  12 敗中滿血 Dragapult 被 Powerful Hand 一擊倒 16 次，9 勝中 0 次）
+        return max(value, 85)
     if card.get("cardType") == CARD_BASIC_ENERGY:
         value = max(value, 45)
     elif card.get("cardType") == CARD_ITEM and hand_count(board, card.get("name")) >= 2:

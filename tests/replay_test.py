@@ -110,6 +110,7 @@ def synthetic_cases(strategy):
         ("場上 Budew＋Dragapult ex（薄場）、手上第二隻 Budew：不鋪", thin_budew_case(strategy), "[1]"),
         ("Nighttime Mine 在場、Dragapult ex 只有 2 能（打不出 Phantom Dive）：Boss 拉打得倒的 Dreepy", mine_boss_case(strategy), "[1]"),
         ("對 Crustle 選新戰鬥寶可夢：挑下回合撐得住 120 的 Drakloak，不挑能量多但 90 HP 的", next_threat_case(strategy), "[1]"),
+    ] + snapshot_cases() + [
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
@@ -187,6 +188,15 @@ def next_threat_case(strategy):
     obs = {"current": {"yourIndex": 0, "players": players},
            "select": {"type": 1, "context": 4, "option": options}}
     return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def snapshot_cases():
+    """實戰盤面的快照（tests/fixtures/cases/*.json：name、context、expect）。手工拼盤面太麻煩的規則用這種。"""
+    cases = []
+    for path in sorted((FIXTURE_DIR / "cases").glob("*.json")):
+        case = json.loads(path.read_text(encoding="utf-8"))
+        cases.append((case["name"], case["context"], case["expect"]))
+    return cases
 
 
 def crustle_case(strategy, drakloak_ready):
