@@ -36,12 +36,16 @@ def load_strategy():
 
 
 def expert_ids(handles):
-    board = json.loads((ROOT / "data" / "raw" / "leaderboard.json").read_text())["data"]
+    """handle → agentId：直接從對戰紀錄的玩家名單找（排行榜會變，掉出前幾名的高手查不到）。"""
     wanted = {h.strip() for h in handles.split(",") if h.strip()}
-    ids = {r["agent"]["id"] for r in board if r["agent"]["handle"] in wanted}
-    if len(ids) != len(wanted):
-        found = {r["agent"]["handle"] for r in board if r["agent"]["id"] in ids}
-        raise SystemExit(f"排行榜裡找不到：{sorted(wanted - found)}")
+    ids, found = set(), set()
+    for path in MATCH_DIR.glob("*.json"):
+        for player in json.loads(path.read_text())["battle"].get("players") or []:
+            if player.get("handle") in wanted:
+                ids.add(player["agentId"])
+                found.add(player["handle"])
+    if found != wanted:
+        raise SystemExit(f"對戰紀錄裡找不到：{sorted(wanted - found)}")
     return ids
 
 
