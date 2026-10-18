@@ -5,6 +5,8 @@
 公開的對戰清單只給「最近 20 場」、沒有下一頁，所以要更多場就按 agent 抓：
 先讀排行榜前 N 名，再用 agentId 篩選各自的對戰（這些也剛好是高分玩家的對戰）。
 用法：python3 tools/fetch_public.py [總場數上限，預設 20] [排行榜前幾名，預設 0＝只抓最近 20 場]
+      python3 tools/fetch_public.py --scout raps,usecommitt [每人幾場，預設 30]
+        研究特定對手：按 handle 抓他們的對戰，存到 data/raw/scout/（不混進高手對照用的 data/raw/matches/）
 """
 import json
 import sys
@@ -53,7 +55,45 @@ def list_matches(agent_id=None, limit=50):
     return matches[:limit]
 
 
+def find_agents(handles):
+    """在排行榜裡找這些 handle 的 agentId（分頁掃完整個排行榜）。"""
+    wanted, found, offset = {h.lower() for h in handles}, {}, 0
+    while True:
+        board = get_json(f"/competition/leaderboard?competitionId={COMPETITION_ID}&limit=100&offset={offset}")
+        rows = board.get("data") or []
+        for row in rows:
+            handle = ((row.get("agent") or {}).get("handle") or "").lower()
+            if handle in wanted:
+                found[handle] = row["agent"]["id"]
+        offset += len(rows)
+        if not rows or offset >= board.get("total", 0):
+            return found
+
+
+def scout(handles, per_agent):
+    out_dir = RAW / "scout"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    agents = find_agents(handles)
+    for handle in handles:
+        if handle.lower() not in agents:
+            print(f"排行榜上找不到 {handle}")
+    for handle, agent_id in agents.items():
+        matches = list_matches(agent_id=agent_id, limit=per_agent)
+        print(f"{handle}：{len(matches)} 場")
+        for m in matches:
+            out = out_dir / f"{m['matchId']}.json"
+            if out.exists():
+                continue
+            battle = get_json(f"/tcg/battle/{m['matchId']}")
+            decisions = get_json(f"/tcg/battle/{m['matchId']}/decisions")
+            out.write_text(json.dumps({"battle": battle, "decisions": decisions, "scouted": handle}, ensure_ascii=False))
+            time.sleep(0.5)
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "--scout":
+        scout([h.strip() for h in sys.argv[2].split(",") if h.strip()], int(sys.argv[3]) if len(sys.argv) > 3 else 30)
+        return
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 20
     top_agents = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     MATCH_DIR.mkdir(parents=True, exist_ok=True)

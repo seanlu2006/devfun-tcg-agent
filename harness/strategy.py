@@ -608,6 +608,11 @@ def score_main_option(board, option):
         draws = card_info(board.option_card_id(option)).get("name") not in COUNTER_MOVERS
         if draws and wall_attacker_ready(board):
             return 5   # 牆對局、已有非 ex 攻擊手在打：省牌庫（raps 的 Crustle 三場都是我們先抽光；Codex 對局分析）
+        if draws and wall_in_play(board) and deck_count is not None and deck_count <= 25 \
+                and len(board.me.get("hand") or []) >= 4:
+            # 對手有 Crustle：手上已經有牌就別再挖牌庫（第 30 批 599b0a95：已拿 5 獎、對手 0 獎，T24 牌庫抽光；
+            # 累計 8 場 Crustle 對局都是我們先抽光）
+            return 5
         if draws and deck_count is not None and deck_count <= LOW_DECK:  # 不能寫 (deckCount or 99)：0 張會被當成 99（Codex 審查抓到）
             return 5
         return SCORE["ability"]
@@ -743,6 +748,12 @@ def wasted_on_doomed_active(board, target, energy_type):
 def facing_wall(board):
     """對手戰鬥場是 ex 打不動的牆（Crustle）。只在這種對局啟用省牌庫、保 Drakloak 等規則。"""
     return card_info((board.opp_active or {}).get("id")).get("name") in EX_IMMUNE_DEFENDERS
+
+
+def wall_in_play(board):
+    """對手場上（戰鬥場或備戰區）有 ex 打不動的牆 → 這場會拖很久，要省牌庫。"""
+    return any(card_info((m or {}).get("id")).get("name") in EX_IMMUNE_DEFENDERS
+               for m in (board.opp.get("active") or []) + (board.opp.get("bench") or []))
 
 
 def wall_attacker_ready(board):
@@ -897,6 +908,8 @@ def score_play_card(board, option):
             return -1   # 用完牌庫會變 0（Codex 對局分析 308e86ac T31：牌庫 1 張還出 Lillie's）
         if wall_attacker_ready(board) and draw_n > len(board.me.get("hand") or []) - 1:
             return -1   # 牆對局、攻擊手已在打：會淨減牌庫的 Lillie's 先不用
+        if wall_in_play(board) and deck_count is not None and deck_count <= 20 and len(board.me.get("hand") or []) >= 3:
+            return -1   # 對手有 Crustle、牌庫剩 20 以下：手上還有牌就先不用 Lillie's
         if active_color_starved(board) and len(board.me.get("hand") or []) <= 2 \
                 and not board.current.get("energyAttached"):
             # 戰鬥場缺一種顏色、還能手貼、手牌只剩這麼少：先抽，不要為了 1 獎的小攻擊跳過
