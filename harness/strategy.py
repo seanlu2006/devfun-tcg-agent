@@ -182,7 +182,7 @@ def spread_ko_prizes(board, spread):
     if spread and opp_stadium_blocks_spread(board):
         return 0
     prizes, left = 0, spread
-    for mon in sorted((m for m in board.opp.get("bench") or [] if m and (m.get("hp") or 0) > 0),
+    for mon in sorted((m for m in board.opp.get("bench") or [] if m and (m.get("hp") or 0) > 0 and not counter_immune(m)),
                       key=lambda m: m.get("hp")):
         if mon["hp"] > left:
             break
@@ -372,7 +372,9 @@ class Board:
                 # 但 60 點照樣有效（Codex 敗局分析 121bda75 T27：戰鬥場 Dragapult 沒能量、備戰區有備好的，
                 # 兩隻都被算成 0，於是沒補撤退費換人）
                 # 對手的 Battle Cage 會擋掉備戰區指示物 → 不算（Codex 敗局分析 5b1c90af：被當成 60 戰力，沒換 Drakloak）
-                spread = bench_spread(attack_id) if self.opp.get("bench") and not opp_stadium_blocks_spread(self) else 0
+                # 備戰區全都帶 Mist／Rock Fighting Energy（指示物打不進去）也算 0（Codex 敗局分析 83ae9aed T13）
+                hittable = any(m and not counter_immune(m) for m in self.opp.get("bench") or [])
+                spread = bench_spread(attack_id) if hittable and not opp_stadium_blocks_spread(self) else 0
                 best = max(best, hit + spread)
         return best
 
@@ -1014,10 +1016,11 @@ def pick_counter_target(board, legal):
         hurt = hp < ((mon or {}).get("maxHp") or hp)
         # 試過 Codex 建議的「先放到下一擊打得倒的門檻」（2026-10-18）：和高手選法不同的 89 次裡，
         # 高手 73 次照舊規則（集中放已受傷的），只有 10 次照新規則 → 不採用
+        energies = len(mon.get("energies") or [])   # 完全同分時打能量多的（快能接替攻擊；四位高手 9 比 6）
         if hp <= remain:
-            key = (1, prize_value(mon.get("id")), hp, hurt, 0)
+            key = (1, prize_value(mon.get("id")), hp, hurt, 0, energies)
         else:
-            key = (0, 0, 0, hurt, -hp)
+            key = (0, 0, 0, hurt, -hp, energies)
         scored.append((key, action))
     return max(scored)[1] if scored else None
 
@@ -1052,6 +1055,15 @@ def pick_counter_move_target(board, legal):
 
 
 COUNTER_IMMUNE_ENERGIES = {"Rock Fighting Energy", "Mist Energy"}
+
+
+def opp_has_hand_attack(board):
+    """對手場上有沒有「依手牌張數打傷害」的招式（Alakazam 的 Powerful Hand）。"""
+    for mon in (board.opp.get("active") or []) + (board.opp.get("bench") or []):
+        for attack_id in card_info((mon or {}).get("id")).get("attacks") or []:
+            if board.hand_counter_damage(attack_id, 1):
+                return True
+    return False
 
 
 def counter_immune(mon):
@@ -1130,6 +1142,9 @@ def want_value(board, card_id, in_hand=False):
             # 拿了這回合就能貼上、湊齊戰鬥場的計畫招式（Codex 敗局分析 f4a8c816：Night Stretcher 撿 Dreepy 不撿超能量；高手 6 比 1）
             return 92
         return 60 if card.get("energyType") in needed_colors(board) else 25
+    if card.get("name") == "Unfair Stamp" and (board.opp.get("handCount") or 0) >= 8 and opp_has_hand_attack(board) \
+            and "Unfair Stamp" not in {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}:
+        return 94   # 對手靠手牌張數打傷害（Powerful Hand）：Stamp 把他壓到 2 張（Codex 對局分析 c39d05e7：對手 19、23 張手牌時沒拿）
     if card.get("cardType") == CARD_SUPPORTER:
         if card.get("name") in ENERGY_FETCH_CARDS and energy_starved(board) and not board.current.get("supporterPlayed"):
             return 85   # 缺能量又還沒用支援者：Crispin 一張補 2 個能量（Codex 敗局分析 c0e4aafc、d601a6ff）
