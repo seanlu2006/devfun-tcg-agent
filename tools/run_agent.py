@@ -126,6 +126,8 @@ class Runner:
             ac.save_state(self.state)
             print(f"已用牌組 {Path(self.args.deck).stem} 加入，這一季的牌組已鎖定。")
         print(f"加入：{data.get('status')}" + (f"，對戰 {data.get('matchId')}" if data.get("matchId") else "，排隊中…"))
+        if data.get("matchId"):
+            print(f"  觀戰：https://arena.dev.fun/tcg-playground/match/{data.get('matchId')}")
         self.log(event="join", status=data.get("status"), matchId=data.get("matchId"), version=self.version)
         return True
 

@@ -959,6 +959,8 @@ def score_play_card(board, option):
         # 場上有 Dreepy、手上握著 Drakloak／Dragapult ex：Judge 會把確定的進化鏈洗掉
         # （Codex 對局分析 0c1e6d44 T2：這樣洗掉後拖到 T6 才有 Drakloak，整場沒打出 Phantom Dive）
         return -1
+    if name == "Judge" and (board.opp.get("handCount") or 0) <= 3:
+        return -1   # 對手手牌 3 張以下時 Judge 只會幫他補到 4 張（真實比賽研究 R11）
     if name == "Judge":
         # 雙方洗手牌、各抽 4：自己手上能用的牌少時，它就是抽牌支援者（Codex 敗局分析 f4a8c816、8d2c126f：
         # 手上只剩用不到的牌，Judge 被當干擾卡固定 30 分，一直沒出）
