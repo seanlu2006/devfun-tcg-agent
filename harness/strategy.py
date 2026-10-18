@@ -833,6 +833,31 @@ def second_engine_wanted(board):
                                            for m in board.me.get("bench") or [])
 
 
+def munkidori_needs_dark(board, energy_type, in_hand=False):
+    """還能手貼、手上沒有惡能量、場上有沒貼惡的 Munkidori、我方有傷害可以移 → 這張惡能量能馬上啟動特性。"""
+    if in_hand or energy_type != ABILITY_ENERGY.get("Munkidori") or board.current.get("energyAttached"):
+        return False
+    if energy_type in hand_energy_types(board):
+        return False
+    has_target = any(card_info(m.get("id")).get("name") == "Munkidori" and energy_type not in (m.get("energies") or [])
+                     for m in board.my_pokemon())
+    hurt = any((m.get("hp") or 0) < (m.get("maxHp") or 0) for m in board.my_pokemon())
+    return has_target and hurt
+
+
+def stretcher_completes_dive(board):
+    active = board.my_active or {}
+    if card_info(active.get("id")).get("name") != "Dragapult ex" or board.current.get("energyAttached"):
+        return False
+    if stadium_name(board) in TERA_TAX_STADIUMS:
+        return False
+    lacking = missing_energy(active.get("energies"), plan_cost(active.get("id")))
+    if len(lacking) != 1 or lacking[0] == COLORLESS or lacking[0] in hand_energy_types(board):
+        return False
+    return any(card_info(card_id_of(c)).get("cardType") == CARD_BASIC_ENERGY
+               and card_info(card_id_of(c)).get("energyType") == lacking[0] for c in board.me.get("discard") or [])
+
+
 def holds_evolution_chain(board):
     """手上的進化卡能接上場上的寶可夢（Dreepy＋手上 Drakloak；或 Drakloak＋手上 Dragapult ex）。"""
     in_play = board.names_in_play()
@@ -993,6 +1018,9 @@ def score_play_card(board, option):
         # 主力缺能量、手上又沒有對的能量 → 每回合唯一一張支援者先給 Crispin
         # （2026-10-17 第 3 批：這種回合手上有 Crispin 17 次，只打出 8 次，其他被 Lillie's／Boss's 搶走）
         return SCORE["attach_needed_bench"] + 2 if energy_starved(board) else SCORE["draw"] - 5
+    if name in RECOVERY_CARDS and stretcher_completes_dive(board):
+        # 棄牌堆撿回缺的那色、手貼上去，這回合就能 Phantom Dive（Codex 高手研究：1ef45c4a、2bd8b192）
+        return SCORE["attack_ko"] + 7
     if name in RECOVERY_CARDS:
         # Night Stretcher：棄牌堆有主力要的能量或主力線寶可夢才用，不然留著
         return SCORE["draw"] + 5 if recoverable_value(board) else SCORE["item"] - 5
@@ -1372,6 +1400,8 @@ def want_value(board, card_id, in_hand=False):
                         for m in board.my_pokemon()):
             # 拿了這回合就能貼上、湊齊戰鬥場的計畫招式（Codex 敗局分析 f4a8c816：Night Stretcher 撿 Dreepy 不撿超能量；高手 6 比 1）
             return 92
+        if munkidori_needs_dark(board, card.get("energyType"), in_hand):
+            return 91   # 能啟動 Munkidori 的特性（Codex 高手研究：StartupBros 4 比 0、antge 2 比 0）
         return 60 if card.get("energyType") in needed_colors(board) else 25
     if card.get("name") == "Unfair Stamp" and (board.opp.get("handCount") or 0) >= 8 and opp_has_hand_attack(board) \
             and "Unfair Stamp" not in {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}:
