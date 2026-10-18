@@ -333,7 +333,7 @@ class Board:
         if not pokemon:
             return False
         for attack_id in card_info(pokemon.get("id")).get("attacks") or []:
-            cost = attack_info(attack_id).get("energies") or []
+            cost = attack_cost(self, pokemon, attack_id)
             if (attack_info(attack_id).get("damage") or 0) > 0 and not missing_energy(pokemon.get("energies"), cost):
                 return True
         return False
@@ -367,7 +367,7 @@ class Board:
         best = 0
         for attack_id in card_info(pokemon.get("id")).get("attacks") or []:
             atk = attack_info(attack_id)
-            if not missing_energy(pokemon.get("energies"), atk.get("energies") or []):
+            if not missing_energy(pokemon.get("energies"), attack_cost(self, pokemon, attack_id)):
                 hit = self.damage_against(attack_id, pokemon, self.opp_active) if self.opp_active \
                     else (atk.get("damage") or 0)
                 # Phantom Dive 放到對手備戰區的指示物也算戰力（對手有備戰寶可夢時）：打 Crustle 本體是 0，
@@ -387,7 +387,7 @@ class Board:
             return 0
         best = 0
         for attack_id in card_info(attacker.get("id")).get("attacks") or []:
-            if not missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
+            if not missing_energy(attacker.get("energies"), attack_cost(self, attacker, attack_id)):
                 best = max(best, self.damage_against(attack_id, attacker, defender))
         return best
 
@@ -427,7 +427,7 @@ class Board:
         """這隻現在付得起的招式，打對手戰鬥場的最高正面傷害（不含備戰區指示物）。"""
         best = 0
         for attack_id in card_info((pokemon or {}).get("id")).get("attacks") or []:
-            if not missing_energy(pokemon.get("energies"), attack_info(attack_id).get("energies") or []):
+            if not missing_energy(pokemon.get("energies"), attack_cost(self, pokemon, attack_id)):
                 best = max(best, self.damage_against(attack_id, pokemon, self.opp_active))
         return best
 
@@ -438,7 +438,7 @@ class Board:
             return 0
         best = 0
         for attack_id in card_info(attacker.get("id")).get("attacks") or []:
-            if not missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
+            if not missing_energy(attacker.get("energies"), attack_cost(self, attacker, attack_id)):
                 dmg = self.damage_against(attack_id, attacker, defender)
                 # 「雙方戰鬥寶可夢每有 1 個能量多 N 傷害」（Teal Mask Ogerpon ex 的 Myriad Leaf Shower：以前只算基礎 30，實際打 210）
                 bonus = re.search(r"(\d+) more damage for each energy attached to both active", (attack_info(attack_id).get("text") or "").lower())
@@ -472,7 +472,7 @@ class Board:
         # 下回合打 340 收掉 Dragapult）
         opp_hand = (self.opp.get("handCount") or 0) + 1
         for attack_id in card_info(attacker.get("id")).get("attacks") or []:
-            if missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
+            if missing_energy(attacker.get("energies"), attack_cost(self, attacker, attack_id)):
                 continue
             if self.hand_counter_damage(attack_id, opp_hand) >= hp > self.hand_counter_damage(attack_id, 5):
                 return True
@@ -485,7 +485,7 @@ class Board:
             return 0
         best = self.opp_threat(defender)
         for attack_id in card_info(attacker.get("id")).get("attacks") or []:
-            if len(missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or [])) <= 1:
+            if len(missing_energy(attacker.get("energies"), attack_cost(self, attacker, attack_id))) <= 1:
                 best = max(best, self.damage_against(attack_id, attacker, defender))
         return best
 
@@ -587,7 +587,8 @@ def score_main_option(board, option):
         target_name = card_info((target or {}).get("id")).get("name")
         evolves_to = card_info(board.hand_card_id(option.get("index", 0))).get("name")
         names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
-        if target_name == "Drakloak" and names.count("Drakloak") == 1 and names.count(evolves_to) >= 2:
+        if target_name == "Drakloak" and names.count("Drakloak") == 1 and names.count(evolves_to) >= 2 \
+                and not evolution_wins_now(board, target, board.hand_card_id(option.get("index", 0))):
             return -1   # 等其中一隻 Dragapult ex 被打倒（剩不到 2 隻）才進化，這條就不擋了
         # 進化後戰力反而下降（對上 Crustle：能打 70 的 Drakloak 進化成打 0 的 Dragapult ex）→ 不進化
         # （Codex 對局分析：三場 Crustle 消耗戰都這樣把唯一打得動的攻擊手進化掉）
@@ -638,6 +639,10 @@ def score_main_option(board, option):
         # 只擋抽牌／找牌的特性；Munkidori 移傷害不碰牌庫（Codex 敗局分析 388f3888 T21：牌庫 7 張時沒移傷，
         # 被 250 打倒；高手 4 比 0）
         draws = card_info(board.option_card_id(option)).get("name") not in COUNTER_MOVERS
+        if draws and deck_count is not None and deck_count <= ABILITY_DRAWS.get(card_info(board.option_card_id(option)).get("name"), 1):
+            # 用了就把牌庫拿光，下回合抽不到牌直接輸：排在結束回合之後（2026-10-19 檢討：以前回傳 5，仍高於結束回合的 0；
+            # 我們有 18 場輸在抽光牌庫）
+            return -1
         if draws and wall_attacker_ready(board):
             return 5   # 牆對局、已有非 ex 攻擊手在打：省牌庫（raps 的 Crustle 三場都是我們先抽光；Codex 對局分析）
         active = board.my_active or {}
@@ -823,6 +828,16 @@ def stadium_name(board):
     return card_info(card_id_of(stadium)).get("name") if stadium else None
 
 
+def attack_cost(board, mon, attack_id):
+    """這隻寶可夢用這招「實際」要付的能量：卡面費用，Nighttime Mine 在場時太晶寶可夢再多 1 個無色。
+    所有「付不付得起」的估算都走這裡（2026-10-19 檢討：以前只有部分規則算到 Mine 的加價，
+    出 Boss 與選拉誰用了不同判斷）。"""
+    cost = list(attack_info(attack_id).get("energies") or [])
+    if stadium_name(board) in TERA_TAX_STADIUMS and card_info((mon or {}).get("id")).get("name") in TERA_POKEMON:
+        cost.append(COLORLESS)
+    return cost
+
+
 def tera_taxed(board, mon):
     """Nighttime Mine 在場、這隻是太晶：計畫招式還差那 1 個多出來的無色能量。"""
     if stadium_name(board) not in TERA_TAX_STADIUMS or card_info((mon or {}).get("id")).get("name") not in TERA_POKEMON:
@@ -915,6 +930,25 @@ def evolution_saves_game(board, target, evolved):
     return board.can_attack_now(new) and new["hp"] > board.opp_threat_next(new)
 
 
+def evolution_wins_now(board, target, evolved_id):
+    """戰鬥場這隻進化後，這回合的招式就能拿完我們剩下的獎賞卡（戰鬥場＋Phantom Dive 順便打倒的備戰區）。
+    保護型的「別進化」規則都要讓路（2026-10-19 檢討：保留最後一隻 Drakloak 的規則擋掉了直接致勝的進化）。"""
+    if evolved_id is None or target is not board.my_active or not board.opp_active:
+        return False
+    evolved = dict(target, id=evolved_id)
+    opp = board.opp_active
+    need = len(board.me.get("prize") or [])
+    if not need:
+        return False   # 沒有獎賞卡資料（測試／公開紀錄）就不判斷，免得當成「打一下就贏」
+    for attack_id in card_info(evolved_id).get("attacks") or []:
+        if missing_energy(evolved.get("energies"), attack_cost(board, evolved, attack_id)):
+            continue
+        prizes = prize_value(opp.get("id")) if board.damage_against(attack_id, evolved, opp) >= (opp.get("hp") or 0) else 0
+        if prizes + spread_ko_prizes(board, bench_spread(attack_id)) >= need:
+            return True
+    return False
+
+
 def holds_evolution_chain(board):
     """手上的進化卡能接上場上的寶可夢（Dreepy＋手上 Drakloak；或 Drakloak＋手上 Dragapult ex）。"""
     in_play = board.names_in_play()
@@ -974,13 +1008,14 @@ def score_play_card(board, option):
     if card_type == CARD_POKEMON and card.get("basic"):
         if board.bench_space() <= 0:
             return -1
+        names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
+        if not EVOLVES_INTO.get(name) and (card.get("hp") or 0) <= 30 and name in names and len(names) >= 2:
+            # 第二隻 Budew（30 HP）＝送對手一張獎賞卡（Codex 對局分析 0903e2e6：Mega Starmie 的備戰 50 點
+            # 同回合打倒兩隻 Budew）。放在「薄場先鋪」之前：以前被它的早退跳過（2026-10-19 檢討）；
+            # 只有場上只剩 1 隻時才例外（不放就可能直接沒寶可夢判輸）
+            return -1
         if thin:
             return SCORE["evolve"] - 1  # 場上快沒寶可夢了：先鋪，不然被打倒就直接輸
-        names = [card_info(m.get("id")).get("name") for m in board.my_pokemon()]
-        if not EVOLVES_INTO.get(name) and (card.get("hp") or 0) <= 30 and name in names:
-            # 第二隻 Budew（30 HP）＝送對手一張獎賞卡（Codex 對局分析 0903e2e6：Mega Starmie 的備戰 50 點
-            # 同回合打倒兩隻 Budew）
-            return -1
         meowth_search = name == "Meowth ex" and not board.current.get("supporterPlayed") and not any(
             card_info(card_id_of(c)).get("cardType") == CARD_SUPPORTER for c in board.me.get("hand") or [])
         if len(board.opp.get("prize") or []) <= 1 and len(names) >= THIN_BENCH and not meowth_search:
@@ -1226,7 +1261,7 @@ def pick_hammer_target(board, legal):
         idx = option.get("energyIndex")
         if isinstance(idx, int) and 0 <= idx < len(energies):
             energies.pop(idx)
-        return all(missing_energy(energies, attack_info(a).get("energies") or [])
+        return all(missing_energy(energies, attack_cost(board, opp_active, a))
                    for a in card_info(opp_active.get("id")).get("attacks") or [])
     def removes_rock(action):
         option = single_pick(board, action)
@@ -1358,7 +1393,9 @@ def pick_counter_target(board, legal):
     return max(scored)[1] if scored else None
 
 
-COUNTER_MOVERS = {"Munkidori": 30}   # 特性：把自己身上的傷害指示物移到對手（最多 3 個＝30）
+COUNTER_MOVERS = {"Munkidori": 30}
+# 抽牌類特性一次最多從牌庫拿走幾張（沒列的當 1 張：Drakloak 看 2 拿 1）；牌庫不超過這個數就別用
+ABILITY_DRAWS = {"Fezandipiti ex": 3}   # 特性：把自己身上的傷害指示物移到對手（最多 3 個＝30）
 
 
 def pick_counter_move_target(board, legal):
@@ -1366,6 +1403,8 @@ def pick_counter_move_target(board, legal):
     這回合還沒用支援者（或有 Prime Catcher）。都沒有就回傳 None，照舊規則選。
     （Codex 對局分析 b57dfd61 T9：30 點放 Staryu；放備戰區 Mega Starmie 210→180，再 Boss＋Phantom Dive 就拿最後 3 獎；
      四位 Dragapult 高手 1 比 0 支持）"""
+    # 一律當 30：特性分三步問（選來源 (1,16) → 選幾個 (8,40) → 選目標這一題），到這一題時指示物已經從我方拿起來，
+    # 盤面看不出這次移了多少（2026-10-19 檢討試過「看我方身上的傷害」，高手資料 3 個決策點全部變錯，撤回）
     moved = COUNTER_MOVERS[card_info((board.select.get("effect") or {}).get("id")).get("name")]
     hand = {card_info(card_id_of(c)).get("name") for c in board.me.get("hand") or []}
     can_gust = bool(hand & {"Prime Catcher"}) or (bool(hand & GUST_CARDS) and not board.current.get("supporterPlayed"))
@@ -1418,7 +1457,9 @@ def pokemon_value(board, mon, side):
         # 先看「現在能打多少」，再看能量數（Codex 對局分析：以前會推出有 1 個能量、卻還不能攻擊的 Drakloak，
         # 而不是撤退費 0 的 Budew；高手對照 3 比 2）。上場後還會被打倒的，排在挨得住的後面
         atk = best_attack(mon.get("id"))
-        survives = 1 if (mon.get("hp") or 0) > board.opp_threat(mon) else 0
+        # 看對手「下回合」（再貼 1 能、含 Spiky 反傷）打不打得倒，跟准許撤退時用同一個判斷
+        # （2026-10-19 檢討：撤退看下回合、選人看現在，推出了會被 Crustle 下回合打倒的 90 HP Drakloak）
+        survives = 1 if board.survives_up_front(mon) else 0
         # 試過「戰力相同時 Drakloak 排在配角後面」（Codex 建議）：高手一致率（挑一隻上戰鬥場）62% → 55～58%，不採用
         return (survives if board.power_now(mon) >= 60 else 0, board.power_now(mon), energies,
                 atk[1] if atk else 0)
@@ -1643,7 +1684,7 @@ def ready_upgrade(board):
             evo = card_info(evo_id)
             if evo.get("name") in hand:
                 continue
-            if any(not missing_energy(mon.get("energies"), attack_info(a).get("energies") or [])
+            if any(not missing_energy(mon.get("energies"), attack_cost(board, dict(mon, id=evo_id), a))
                    and (attack_info(a).get("damage") or 0) > 0 for a in evo.get("attacks") or []):
                 return True
     return False

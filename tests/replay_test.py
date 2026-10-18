@@ -105,10 +105,88 @@ def synthetic_cases(strategy):
         ("場上已有 Budew 和另外兩隻：不再鋪第二隻 Budew（30 HP 送分）", second_budew_case(strategy), "[1]"),
         ("Ultra Ball 丟 2 張：留住唯一的 Lillie's，丟 Hammer＋惡能量", keep_lillie_case(strategy), "[0,2]"),
         ("對上 Crustle（備戰區沒人）：能打 70 的 Drakloak 不進化成打 0 的 Dragapult ex", crustle_evolve_case(strategy), "[1]"),
+        ("只剩 1 隻 Drakloak 但進化後 Phantom Dive 直接拿完最後 2 獎：要進化", winning_evolve_case(strategy), "[0]"),
+        ("牌庫只剩 1 張、Drakloak 打不出招：不用找牌特性把牌庫拿光，直接結束", last_card_case(strategy), "[1]"),
+        ("場上 Budew＋Dragapult ex（薄場）、手上第二隻 Budew：不鋪", thin_budew_case(strategy), "[1]"),
+        ("Nighttime Mine 在場、Dragapult ex 只有 2 能（打不出 Phantom Dive）：Boss 拉打得倒的 Dreepy", mine_boss_case(strategy), "[1]"),
+        ("對 Crustle 選新戰鬥寶可夢：挑下回合撐得住 120 的 Drakloak，不挑能量多但 90 HP 的", next_threat_case(strategy), "[1]"),
         ("context 是 None", None, None),
         ("legalActions 不是 list", {"observation": {}, "legalActions": 5}, None),
         ("observation 缺欄位", {"observation": {"select": {"type": 0, "option": None}}, "legalActions": ["[0]"]}, "[0]"),
     ]
+
+
+def winning_evolve_case(strategy):
+    """2026-10-19 檢討（Codex 審查第 1 條）：戰鬥場 Drakloak（火＋超）、備戰區兩隻 Dragapult ex、手上 Dragapult ex；
+    對手戰鬥場 190 HP 的 Dragapult ex、我們剩 2 張獎賞卡。選項 [0] 進化戰鬥場、[1] Drakloak 的招式、[2] 結束。"""
+    ids = _ids(strategy)
+    atk = strategy.card_info(ids["Drakloak"])["attacks"][0]
+    pult = {"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": []}
+    players = [{"active": [{"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": [2, 5]}],
+                "bench": [dict(pult), dict(pult)], "benchMax": 5, "hand": [{"id": ids["Dragapult ex"]}],
+                "deckCount": 20, "prize": [0, 0]},
+               {"active": [{"id": ids["Dragapult ex"], "hp": 190, "maxHp": 320, "energies": []}], "bench": [],
+                "benchMax": 5, "prize": [0, 0, 0, 0]}]
+    options = [{"type": 9, "area": 2, "index": 0, "inPlayArea": 4, "inPlayIndex": 0}, {"type": 13, "attackId": atk},
+               {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 3},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]", "[2]"]}
+
+
+def last_card_case(strategy):
+    """2026-10-19 檢討（Codex 審查第 3 條）：牌庫剩 1 張，戰鬥場 Drakloak 沒能量。選項 [0] Drakloak 的特性、[1] 結束。"""
+    ids = _ids(strategy)
+    players = [{"active": [{"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": []}], "bench": [],
+                "benchMax": 5, "hand": [], "deckCount": 1},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 10, "area": 4, "index": 0}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def thin_budew_case(strategy):
+    """2026-10-19 檢討（Codex 審查第 4 條）：戰鬥場 Budew、備戰區 Dragapult ex，手上第二隻 Budew。
+    選項 [0] 放 Budew、[1] 結束。"""
+    ids = _ids(strategy)
+    players = [{"active": [{"id": ids["Budew"], "hp": 30, "maxHp": 30, "energies": []}],
+                "bench": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}],
+                "benchMax": 5, "hand": [{"id": ids["Budew"]}], "deckCount": 20},
+               {"active": [{"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "bench": [], "benchMax": 5}]
+    options = [{"type": 7, "index": 0}, {"type": 14}]
+    obs = {"current": {"yourIndex": 0, "players": players, "turnActionCount": 1},
+           "select": {"type": 0, "context": 0, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def mine_boss_case(strategy):
+    """2026-10-19 檢討（Codex 審查第 8 條）：Nighttime Mine 在場，戰鬥場 Dragapult ex 火＋超（只付得起 Jet Headbutt）。
+    Boss's Orders 選目標：[0] 備戰區 190 HP 的 Dragapult ex、[1] 70 HP 的 Dreepy。"""
+    ids = _ids(strategy)
+    players = [{"active": [{"id": ids["Dragapult ex"], "hp": 320, "maxHp": 320, "energies": [2, 5]}], "bench": [],
+                "benchMax": 5, "hand": [], "deckCount": 20},
+               {"active": [{"id": ids["Budew"], "hp": 30, "maxHp": 30, "energies": []}],
+                "bench": [{"id": ids["Dragapult ex"], "hp": 190, "maxHp": 320, "energies": []},
+                          {"id": ids["Dreepy"], "hp": 70, "maxHp": 70, "energies": []}], "benchMax": 5}]
+    options = [{"area": 5, "type": 3, "index": 0, "playerIndex": 1}, {"area": 5, "type": 3, "index": 1, "playerIndex": 1}]
+    obs = {"current": {"yourIndex": 0, "players": players, "stadium": [{"id": ids["Nighttime Mine"]}]},
+           "select": {"type": 1, "context": 3, "effect": {"id": ids["Boss's Orders"]}, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
+
+
+def next_threat_case(strategy):
+    """2026-10-19 檢討（Codex 審查第 7 條）：對手 Crustle 兩能（Superb Scissors 要三能、120），下回合再貼就能打。
+    選新的戰鬥寶可夢：[0] 90 HP、三能的 Drakloak；[1] 190 HP（帶 Cape）、兩能的 Drakloak。兩隻都打 70。"""
+    ids = _ids(strategy)
+    weak = {"id": ids["Drakloak"], "hp": 90, "maxHp": 90, "energies": [2, 5, 0]}
+    tough = {"id": ids["Drakloak"], "hp": 190, "maxHp": 190, "energies": [2, 5]}
+    players = [{"active": [], "bench": [weak, tough], "benchMax": 5, "hand": [], "deckCount": 20},
+               {"active": [{"id": 345, "hp": 150, "maxHp": 150, "energies": [1, 1]}], "bench": [], "benchMax": 5}]
+    options = [{"area": 5, "type": 3, "index": 0, "playerIndex": 0}, {"area": 5, "type": 3, "index": 1, "playerIndex": 0}]
+    obs = {"current": {"yourIndex": 0, "players": players},
+           "select": {"type": 1, "context": 4, "option": options}}
+    return {"observation": obs, "legalActions": ["[0]", "[1]"]}
 
 
 def crustle_case(strategy, drakloak_ready):
