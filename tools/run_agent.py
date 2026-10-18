@@ -32,6 +32,9 @@ RUN_DIR = ROOT / "data" / "runs"
 DEADLINE_MARGIN_MS = 1500   # 離截止不到 1.5 秒就不想了，直接送保底動作
 STOP_ERRORS = {"engine_match_allowance_exhausted", "competition_closed"}
 TRANSIENT_ERRORS = {"arena_transaction_busy", "engine_submission_version_busy"}
+# 對戰中的詢問／送出動作：一個決策點只有約 48 秒，連線卡住不能等到 60 秒（2026-10-18 第 23 批：
+# 439086cb 第 17 步沒送出去，被判超時輸）。逾時會回 status 0，照暫時性錯誤重試
+REQUEST_TIMEOUT = 10
 
 
 def version_info(deck):
@@ -79,8 +82,8 @@ class Runner:
         with self.log_path.open("a") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
-    def call(self, method, path, body=None):
-        return ac.request(method, path, body, key=self.key)
+    def call(self, method, path, body=None, timeout=60):
+        return ac.request(method, path, body, key=self.key, timeout=timeout)
 
     # ---------------------------------------------------------------- 加入
     def join(self):
@@ -155,7 +158,7 @@ class Runner:
         但不能拖過截止時間。"""
         body = {"matchId": pending["matchId"], "seq": pending["seq"], "action": action}
         for attempt in range(4):
-            status, data = self.call("POST", "/tcg/action", body)
+            status, data = self.call("POST", "/tcg/action", body, timeout=REQUEST_TIMEOUT)
             if not is_transient(status, data.get("error") or data.get("code")):
                 return status, data
             deadline = pending.get("deadline") or 0
@@ -186,7 +189,8 @@ class Runner:
         tracked, finished = set(), set()   # 看過的進行中對戰／已經算過的對戰
         last_join = time.time()
         while True:
-            status, data = self.call("GET", f"/tcg/pending-actions?competitionId={ac.COMPETITION_ID}")
+            status, data = self.call("GET", f"/tcg/pending-actions?competitionId={ac.COMPETITION_ID}",
+                                     timeout=REQUEST_TIMEOUT)
             if status == 0 or status >= 300:
                 print(f"  詢問失敗（HTTP {status}）：{data}，2 秒後重試")
                 time.sleep(2)

@@ -31,7 +31,7 @@ TERMINAL_STATUSES = {"Active", "Failed", "Cancelled", "TimedOut", "Completed", "
 TRANSIENT_ERRORS = {"engine_submission_version_busy"}  # 官方說明：等幾秒、用同一個 bundle 重試
 
 
-def request(method, path, body=None, key=None, content_type="application/json"):
+def request(method, path, body=None, key=None, content_type="application/json", timeout=60):
     headers = {"User-Agent": "devfun-tcg-agent"}
     if key:
         headers["x-arena-api-key"] = key
@@ -43,7 +43,7 @@ def request(method, path, body=None, key=None, content_type="application/json"):
             body = json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.load(resp)
     except urllib.error.HTTPError as err:
         text = err.read().decode(errors="replace")
