@@ -608,8 +608,11 @@ def score_main_option(board, option):
         draws = card_info(board.option_card_id(option)).get("name") not in COUNTER_MOVERS
         if draws and wall_attacker_ready(board):
             return 5   # 牆對局、已有非 ex 攻擊手在打：省牌庫（raps 的 Crustle 三場都是我們先抽光；Codex 對局分析）
+        active = board.my_active or {}
+        attack_ready = not missing_energy(active.get("energies"), plan_cost(active.get("id"))) and any(
+            isinstance(o, dict) and o.get("type") == OPT_ATTACK for o in board.options)
         if draws and wall_in_play(board) and deck_count is not None and deck_count <= 25 \
-                and len(board.me.get("hand") or []) >= 4:
+                and (len(board.me.get("hand") or []) >= 4 or attack_ready):
             # 對手有 Crustle：手上已經有牌就別再挖牌庫（第 30 批 599b0a95：已拿 5 獎、對手 0 獎，T24 牌庫抽光；
             # 累計 8 場 Crustle 對局都是我們先抽光）
             return 5
@@ -672,7 +675,7 @@ def score_attach(board, option):
         # 戰鬥場打不出東西（例：Dragapult ex 對 Crustle）：先補齊「貼完就能打 60 以上」的候補，再撤退換它
         # （Codex 敗局分析 d9eb6e13 T23：最後一張超能量貼給打 0 的 Dragapult，沒補齊能打 70 的 Drakloak，差 1 獎輸掉）
         after = dict(target, energies=(target.get("energies") or []) + [energy_type])
-        if board.power_now(after) >= 60 > board.power_now(target):
+        if board.power_now(after) >= 60 and board.power_now(after) > board.power_now(target):   # 高手 4 比 0
             return SCORE["attach_needed_active"] + 2 + board.power_now(after) / 1000   # 打得越痛越優先
     missing = missing_energy(target.get("energies"), plan_cost(target.get("id")))
     if not missing:
@@ -797,8 +800,8 @@ def score_play_card(board, option):
                 return SCORE["attack_ko"]
         if targets and board.can_attack_now(board.my_active):
             best_bench = max(prize_value(m.get("id")) for m in targets)
-            if best_bench >= len(board.opp.get("prize") or [0] * 6):
-                return SCORE["evolve"] + 5   # 拉上來打倒就贏了
+            if best_bench >= len(board.me.get("prize") or [0] * 6):
+                return SCORE["evolve"] + 5   # 拉上來打倒就拿完「我們」剩下的獎賞卡＝贏（Codex 抓到：以前誤比對手的）
             opp = board.opp_active
             active_ko = opp and 0 < (opp.get("hp") or 0) <= board.max_damage_vs(opp)
             if active_ko and prize_value(opp.get("id")) >= best_bench:
@@ -1426,7 +1429,16 @@ def pick_cards(board, legal, value_fn, prefer):
         if values is None:
             continue
         if prefer == "high":
-            key = (sum(values), len(values))
+            # 牌庫直接放上備戰區時，低 HP 配角（Budew）全場不超過 1 隻（Codex 敗局分析 5f0f1916：Poffin 一次鋪兩隻 Budew）
+            extra = 0
+            if board.select.get("context") == CTX_DECK_TO_BENCH:
+                for name in {card_info(board.option_card_id(board.options[i])).get("name") for i in picks}:
+                    info = next((c for c in CARDS.values() if c.get("name") == name), {})
+                    if info.get("basic") and (info.get("hp") or 0) <= 30 and not EVOLVES_INTO.get(name):
+                        total = sum(1 for i in picks if card_info(board.option_card_id(board.options[i])).get("name") == name) \
+                            + sum(1 for m in board.my_pokemon() if card_info(m.get("id")).get("name") == name)
+                        extra += 100 * max(0, total - 1)
+            key = (sum(values) - extra, len(values))
         else:
             ids = [board.option_card_id(board.options[i]) for i in picks]
             key = (-(sum(values) + discard_penalty(board, [c for c in ids if c])), -len(values))
