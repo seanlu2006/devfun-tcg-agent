@@ -179,6 +179,8 @@ def bench_spread(attack_id):
 
 def spread_ko_prizes(board, spread):
     """招式放到對手備戰區的 spread 點傷害，最多能順便打倒幾張獎賞卡（從 HP 最低的開始塞，夠就算）。"""
+    if spread and opp_stadium_blocks_spread(board):
+        return 0
     prizes, left = 0, spread
     for mon in sorted((m for m in board.opp.get("bench") or [] if m and (m.get("hp") or 0) > 0),
                       key=lambda m: m.get("hp")):
@@ -369,7 +371,8 @@ class Board:
                 # Phantom Dive 放到對手備戰區的指示物也算戰力（對手有備戰寶可夢時）：打 Crustle 本體是 0，
                 # 但 60 點照樣有效（Codex 敗局分析 121bda75 T27：戰鬥場 Dragapult 沒能量、備戰區有備好的，
                 # 兩隻都被算成 0，於是沒補撤退費換人）
-                spread = bench_spread(attack_id) if self.opp.get("bench") else 0
+                # 對手的 Battle Cage 會擋掉備戰區指示物 → 不算（Codex 敗局分析 5b1c90af：被當成 60 戰力，沒換 Drakloak）
+                spread = bench_spread(attack_id) if self.opp.get("bench") and not opp_stadium_blocks_spread(self) else 0
                 best = max(best, hit + spread)
         return best
 
@@ -454,12 +457,13 @@ class Board:
         if not active or not attacker:
             return False
         hp = active.get("hp") or 0
-        if len(self.opp.get("prize") or []) > prize_value(active.get("id")):
-            return False
+        # 不必等到「被打倒就輸」：對手下回合開頭還會抽 1 張（Codex 敗局分析 553cceb5 T6：15 張手牌＋1＝320，
+        # 下回合打 340 收掉 Dragapult）
+        opp_hand = (self.opp.get("handCount") or 0) + 1
         for attack_id in card_info(attacker.get("id")).get("attacks") or []:
             if missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or []):
                 continue
-            if self.hand_counter_damage(attack_id) >= hp > self.hand_counter_damage(attack_id, 4):
+            if self.hand_counter_damage(attack_id, opp_hand) >= hp > self.hand_counter_damage(attack_id, 5):
                 return True
         return False
 
@@ -711,12 +715,24 @@ def score_play_card(board, option):
         attacks = [o.get("attackId") for o in board.options if isinstance(o, dict) and o.get("type") == OPT_ATTACK]
         targets = [m for m in board.opp.get("bench") or [] if m and 0 < (m.get("hp") or 0)
                    <= max([board.damage_against(a, board.my_active, m) for a in attacks] or [0])]
+        if not targets and board.power_now(board.my_active) == 0 and board.can_attack_now(board.my_active):
+            # 戰鬥場完全打不出效果（例：Crustle＋Battle Cage）：拉一隻「兩擊打得倒」的上來，至少開始扣血
+            # （Codex 敗局分析 5b1c90af T13：13 次 Phantom Dive 有 12 次對 Crustle 打 0）
+            two_hit = [m for m in board.opp.get("bench") or [] if m and 0 < (m.get("hp") or 0) <= 2 * max(
+                [board.damage_against(a, board.my_active, m) for a in attacks] or [0])]
+            if two_hit:
+                return SCORE["attack_ko"]
         if targets and board.can_attack_now(board.my_active):
             best_bench = max(prize_value(m.get("id")) for m in targets)
             opp = board.opp_active
             active_ko = opp and 0 < (opp.get("hp") or 0) <= board.max_damage_vs(opp)
             if active_ko and prize_value(opp.get("id")) >= best_bench:
                 return -1
+            active = board.my_active or {}
+            if not missing_energy(active.get("energies"), plan_cost(active.get("id"))):
+                # 戰鬥場的計畫招式能量都齊了（Crispin 也幫不上它）→ Boss 取獎排在 Crispin（82）前面
+                # （Codex 敗局分析 0fc82924 T13：用 Crispin 把能量貼給 Meowth，晚兩回合才 Boss 收 10 HP 的 Psyduck）
+                return SCORE["attach_needed_bench"] + 3 + best_bench
             return SCORE["attack_ko"] + 5 + best_bench
         return -1
     if name in BOARD_CHANGING_CARDS:
@@ -757,6 +773,10 @@ def score_play_card(board, option):
         return -1
     if name in EVOLUTION_SEARCH_CARDS and missing_engine(board) and missing_evolution(board, name):
         return SCORE["evolve"] - 3   # 場上有 Dreepy 卻沒有任何 Drakloak：先把找牌引擎搜出來（Codex 對局分析 76378bdb）
+    if card_type == CARD_SUPPORTER and name in SEARCH_POKEMON_CARDS and energy_starved(board) \
+            and any(card_info(card_id_of(c)).get("name") in ENERGY_FETCH_CARDS for c in board.me.get("hand") or []):
+        # 缺能量而手上有 Crispin：Dawn 這類搜寶可夢的支援者別先用掉支援者額度（Codex 敗局分析 250b6969 T9）
+        return SCORE["attach_needed_bench"] + 1
     if name in SEARCH_POKEMON_CARDS:
         if board.bench_space() <= 0:
             # 滿場也還能搜「場上缺的進化卡」（Codex 敗局分析 d963cd2f：滿場時 Poké Pad 一直留在手上；高手 13 比 0）
@@ -775,6 +795,10 @@ def score_play_card(board, option):
             return SCORE["attack_ko"] + 8
         return -1
     if name == "Judge" and board.judge_saves_active():
+        return SCORE["attach_needed_active"] + 1   # 排在 Crispin（82～85）前面：支援者一回合只能一張
+    deck_count = board.me.get("deckCount")
+    if name == "Judge" and deck_count is not None and deck_count <= 2 and len(board.me.get("hand") or []) - 1 > 4:
+        # 牌庫快抽光：Judge 把手牌洗回去（Codex 敗局分析 5b1c90af T31：牌庫 0、手牌 9，沒出 Judge，抽光判輸）
         return SCORE["attack_ko"] + 9
     if name == "Judge":
         # 雙方洗手牌、各抽 4：自己手上能用的牌少時，它就是抽牌支援者（Codex 敗局分析 f4a8c816、8d2c126f：
