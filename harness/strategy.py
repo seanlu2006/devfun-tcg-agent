@@ -404,8 +404,14 @@ class Board:
             active_card = card_info((self.my_active or {}).get("id"))
             # 只在戰鬥場是非 ex 配角時才擋：對上 Crustle 時 ex 打不動，Drakloak 本來就該上前
             # 牆對局（Crustle）時解除：Drakloak 是唯一打得動牆的（Codex 對局分析 1f44ea4d：T5 就備好，拖到 T13 才打）
+            # 對 Crustle 時也要撐得住才推（算對手下回合多貼 1 能、Spiky 反傷）——不然只是送一獎
+            # （Codex Crustle＋Munkidori 研究；高手 3 比 1）
             engine = card.get("stage1") and EVOLVES_INTO.get(card.get("name")) \
-                and not (active_card.get("ex") or active_card.get("megaEx")) and not facing_wall(self)
+                and not (active_card.get("ex") or active_card.get("megaEx")) \
+                and not (facing_wall(self) and self.survives_up_front(mon))
+            if facing_wall(self) and not self.survives_up_front(mon) and not card.get("ex") \
+                    and self.damage_vs_opp(mon) < ((self.opp_active or {}).get("hp") or 0):
+                continue   # 牆對局：上去打不倒又會被打倒的非 ex，不推
             # 還能再進化的中間型（Drakloak＝找牌引擎）不為了「打得比較痛」推上前，只在打得倒時才換（下面那條）
             # （Codex 敗局分析 cfd39c6f T3：撤退 Munkidori 讓 90 HP 的 Drakloak 打 70，下回合被打倒；
             #  高手對照：改變的 11 點裡高手都沒撤退，0／2／9）
@@ -471,6 +477,27 @@ class Board:
             if self.hand_counter_damage(attack_id, opp_hand) >= hp > self.hand_counter_damage(attack_id, 5):
                 return True
         return False
+
+    def opp_threat_next(self, defender):
+        """對手戰鬥場下回合（再手貼 1 個能量後）能打 defender 多少：招式只差 1 個能量也算付得起。"""
+        attacker = self.opp_active
+        if not attacker or not defender:
+            return 0
+        best = self.opp_threat(defender)
+        for attack_id in card_info(attacker.get("id")).get("attacks") or []:
+            if len(missing_energy(attacker.get("energies"), attack_info(attack_id).get("energies") or [])) <= 1:
+                best = max(best, self.damage_against(attack_id, attacker, defender))
+        return best
+
+    def spiky_reflect(self):
+        """攻擊對手戰鬥場會吃到的 Spiky Energy 反傷（每張 20）。"""
+        return 20 * sum(1 for c in (self.opp_active or {}).get("energyCards") or []
+                        if card_info(card_id_of(c)).get("name") == "Spiky Energy")
+
+    def survives_up_front(self, mon):
+        """mon 上前攻擊後（吃 Spiky 反傷），撐得過對手下回合的攻擊。"""
+        hp = (mon.get("hp") or 0) - (self.spiky_reflect() if self.damage_vs_opp(mon) > 0 else 0)
+        return hp > self.opp_threat_next(mon)
 
     def losing_swap_available(self):
         """戰鬥場被打倒就輸（對手剩下的獎賞卡 ≤ 它值的張數）、這回合又打不倒對手 →
@@ -584,7 +611,8 @@ def score_main_option(board, option):
                     return -1
         if target and board.hand_card_id(option.get("index", 0)) is not None:   # 看不到手牌（公開紀錄）就不判斷
             evolved = dict(target, id=board.hand_card_id(option.get("index", 0)))
-            if board.power_now(target) >= 60 and board.power_now(evolved) < board.power_now(target):
+            if board.power_now(target) >= 60 and board.power_now(evolved) < board.power_now(target) \
+                    and not evolution_saves_game(board, target, evolved):
                 return -1
         # 試過「進化後會被打倒的戰鬥場改進化別隻」（Codex 建議）：高手 13 次跟舊規則、9 次跟新規則，不採用
         deck_count = board.me.get("deckCount")
@@ -663,6 +691,11 @@ def score_attach(board, option):
     target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex", 0))
     if not target:
         return SCORE["attach_extra"]
+    if option.get("inPlayArea") == AREA_ACTIVE and needs_energy_to_retreat(board) \
+            and board.power_now(board.my_active) < 60 \
+            and any(board.power_now(m) >= 60 and board.survives_up_front(m) for m in board.me.get("bench") or []):
+        # 卡在前排、打不出東西：先付撤退費，換能攻擊又撐得住的上來（Codex 研究 ce6b4103 T5、T7）
+        return SCORE["attach_needed_active"] + 2.5
     if option.get("inPlayArea") == AREA_ACTIVE and needs_energy_to_retreat(board) and board.better_attacker_on_bench():
         # 備戰區已經有備好的主攻手，戰鬥場那隻（例：Meowth ex）卻付不起撤退費 → 這張能量先拿去付撤退費
         # （Codex 對局分析 f6698511 T7：超能量貼給第二隻 Dragapult，Meowth 換不下來，等它被打倒才上場）
@@ -867,6 +900,19 @@ def stretcher_completes_dive(board):
         return False
     return any(card_info(card_id_of(c)).get("cardType") == CARD_BASIC_ENERGY
                and card_info(card_id_of(c)).get("energyType") == lacking[0] for c in board.me.get("discard") or [])
+
+
+def evolution_saves_game(board, target, evolved):
+    """救命例外：戰鬥場下回合會被打倒、沒有健康的替補，而進化後這隻（保留原傷害）能攻擊又撐得住。
+    （Codex 研究 ce6b4103 T19：擋下進化，前排 80 HP 的 Dragapult 被打倒輸掉；進化後是 320 HP）"""
+    active = board.my_active or {}
+    if (active.get("hp") or 0) > board.opp_threat_next(active):
+        return False
+    if board.healthy_swap_available():
+        return False
+    damage = (target.get("maxHp") or 0) - (target.get("hp") or 0)
+    new = dict(evolved, hp=(card_info(evolved.get("id")).get("hp") or 0) - damage)
+    return board.can_attack_now(new) and new["hp"] > board.opp_threat_next(new)
 
 
 def holds_evolution_chain(board):
@@ -1194,6 +1240,20 @@ def pick_hammer_target(board, legal):
     stoppers = [a for a in legal if disables(a)]
     if stoppers:
         return stoppers[0]   # 拆完這顆，對手前排就付不起招式（Codex Crustle 研究：先比較能不能停攻）
+    opp_hurt = any((m.get("hp") or 0) < (m.get("maxHp") or 0) for m in (board.opp.get("active") or []) + (board.opp.get("bench") or []))
+    for action in legal:
+        option = single_pick(board, action)
+        if not option or board.option_side(option) != "opp":
+            continue
+        mon = board.in_play(option.get("area"), option.get("index"), "opp") or {}
+        cards = mon.get("energyCards") or []
+        idx = option.get("energyIndex")
+        is_dark = isinstance(idx, int) and 0 <= idx < len(cards) \
+            and card_info(card_id_of(cards[idx])).get("cardType") == CARD_BASIC_ENERGY \
+            and card_info(card_id_of(cards[idx])).get("energyType") == ABILITY_ENERGY.get("Munkidori")
+        if opp_hurt and is_dark and card_info(mon.get("id")).get("name") in COUNTER_MOVERS \
+                and (mon.get("energies") or []).count(ABILITY_ENERGY.get("Munkidori")) == 1:
+            return action   # 拆對手 Munkidori 唯一的惡能，關掉移傷（Codex 研究 d0436138 T25）
     have_dive = any(bench_spread(a) for a in card_info((board.my_active or {}).get("id")).get("attacks") or [])
     if have_dive and not any(disables(a) for a in legal):
         rock = [a for a in legal if removes_rock(a)]
