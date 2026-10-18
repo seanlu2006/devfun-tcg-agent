@@ -401,8 +401,9 @@ class Board:
             card = card_info(mon.get("id"))
             active_card = card_info((self.my_active or {}).get("id"))
             # 只在戰鬥場是非 ex 配角時才擋：對上 Crustle 時 ex 打不動，Drakloak 本來就該上前
+            # 牆對局（Crustle）時解除：Drakloak 是唯一打得動牆的（Codex 對局分析 1f44ea4d：T5 就備好，拖到 T13 才打）
             engine = card.get("stage1") and EVOLVES_INTO.get(card.get("name")) \
-                and not (active_card.get("ex") or active_card.get("megaEx"))
+                and not (active_card.get("ex") or active_card.get("megaEx")) and not facing_wall(self)
             # 還能再進化的中間型（Drakloak＝找牌引擎）不為了「打得比較痛」推上前，只在打得倒時才換（下面那條）
             # （Codex 敗局分析 cfd39c6f T3：撤退 Munkidori 讓 90 HP 的 Drakloak 打 70，下回合被打倒；
             #  高手對照：改變的 11 點裡高手都沒撤退，0／2／9）
@@ -564,6 +565,15 @@ def score_main_option(board, option):
             return -1   # 等其中一隻 Dragapult ex 被打倒（剩不到 2 隻）才進化，這條就不擋了
         # 進化後戰力反而下降（對上 Crustle：能打 70 的 Drakloak 進化成打 0 的 Dragapult ex）→ 不進化
         # （Codex 對局分析：三場 Crustle 消耗戰都這樣把唯一打得動的攻擊手進化掉）
+        if target and facing_wall(board) and target_name == "Drakloak" and board.hand_card_id(option.get("index", 0)) is not None:
+            # 牆對局：差 1 個能量就能打的 Drakloak 也別進化（進化成 Dragapult ex 對 Crustle 打 0），
+            # 除非已經有別的非 ex 攻擊手備好（Codex 對局分析 275fa6ca T9、T17）
+            own_cost = min((attack_info(a).get("energies") or [] for a in card_info(target.get("id")).get("attacks") or []),
+                           key=len, default=[])
+            others_ready = any(m is not target and not card_info(m.get("id")).get("ex") and board.power_now(m) >= 60
+                               for m in board.my_pokemon())
+            if len(missing_energy(target.get("energies"), own_cost)) <= 1 and not others_ready:
+                return -1
         if target and board.hand_card_id(option.get("index", 0)) is not None:   # 看不到手牌（公開紀錄）就不判斷
             evolved = dict(target, id=board.hand_card_id(option.get("index", 0)))
             if board.power_now(target) >= 60 and board.power_now(evolved) < board.power_now(target):
@@ -587,6 +597,8 @@ def score_main_option(board, option):
         # 只擋抽牌／找牌的特性；Munkidori 移傷害不碰牌庫（Codex 敗局分析 388f3888 T21：牌庫 7 張時沒移傷，
         # 被 250 打倒；高手 4 比 0）
         draws = card_info(board.option_card_id(option)).get("name") not in COUNTER_MOVERS
+        if draws and wall_attacker_ready(board):
+            return 5   # 牆對局、已有非 ex 攻擊手在打：省牌庫（raps 的 Crustle 三場都是我們先抽光；Codex 對局分析）
         if draws and deck_count is not None and deck_count <= LOW_DECK:  # 不能寫 (deckCount or 99)：0 張會被當成 99（Codex 審查抓到）
             return 5
         return SCORE["ability"]
@@ -703,6 +715,19 @@ def wasted_on_doomed_active(board, target, energy_type):
     if any(not missing_energy(after, attack_info(a).get("energies") or []) for a in card.get("attacks") or []):
         return False
     return bool(board.me.get("bench"))   # 備戰區有別人可以接這張能量
+
+
+def facing_wall(board):
+    """對手戰鬥場是 ex 打不動的牆（Crustle）。只在這種對局啟用省牌庫、保 Drakloak 等規則。"""
+    return card_info((board.opp_active or {}).get("id")).get("name") in EX_IMMUNE_DEFENDERS
+
+
+def wall_attacker_ready(board):
+    """牆對局：我們的戰鬥場是非 ex、能打 60 以上、而且下回合挨得住 → 可以開始省牌庫。"""
+    active = board.my_active
+    card = card_info((active or {}).get("id"))
+    return facing_wall(board) and active and not (card.get("ex") or card.get("megaEx")) \
+        and board.power_now(active) >= 60 and (active.get("hp") or 0) > board.opp_threat(active)
 
 
 def needs_energy_to_retreat(board):
@@ -844,6 +869,8 @@ def score_play_card(board, option):
         draw_n = 8 if len(board.me.get("prize") or []) >= 6 else 6
         if deck_count is not None and deck_count + len(board.me.get("hand") or []) - 1 - draw_n <= 0:
             return -1   # 用完牌庫會變 0（Codex 對局分析 308e86ac T31：牌庫 1 張還出 Lillie's）
+        if wall_attacker_ready(board) and draw_n > len(board.me.get("hand") or []) - 1:
+            return -1   # 牆對局、攻擊手已在打：會淨減牌庫的 Lillie's 先不用
     if card_type == CARD_SUPPORTER:
         # 主力缺顏色、手上又補不上：抽牌（Lillie's 等）優先於 Dawn 這類搜寶可夢的（55）
         # （Codex 對局分析 f6698511 T13：先用 Dawn，支援者額度用掉，看到的 Crispin 用不了）
