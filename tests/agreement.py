@@ -18,6 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MATCH_DIR = ROOT / "data" / "raw" / "matches"
+SCOUT_DIR = ROOT / "data" / "raw" / "scout"
+DRAGAPULT_LINE = {"Dreepy", "Drakloak", "Dragapult ex"}
 
 MAIN_LABELS = {7: "出手牌", 8: "貼能量", 9: "進化", 10: "特性", 12: "撤退", 13: "攻擊", 14: "結束回合"}
 CONTEXT_LABELS = {
@@ -35,11 +37,24 @@ def load_strategy():
     return module
 
 
-def expert_ids(handles):
+def plays_dragapult(strategy, match, agent_id):
+    """這場這位玩家的場上出現過 Dreepy／Drakloak／Dragapult ex。"""
+    for dp in match["decisions"]["decisionPoints"]:
+        obs = (dp["perPlayer"].get(agent_id) or {}).get("obs") or {}
+        cur = obs.get("current") or {}
+        players = cur.get("players") or []
+        me = players[cur.get("yourIndex", 0)] if players else {}
+        for mon in (me.get("active") or []) + (me.get("bench") or []):
+            if strategy.card_info(strategy.card_id_of(mon)).get("name") in DRAGAPULT_LINE:
+                return True
+    return False
+
+
+def expert_ids(handles, paths=None):
     """handle → agentId：直接從對戰紀錄的玩家名單找（排行榜會變，掉出前幾名的高手查不到）。"""
     wanted = {h.strip() for h in handles.split(",") if h.strip()}
     ids, found = set(), set()
-    for path in MATCH_DIR.glob("*.json"):
+    for path in (paths or MATCH_DIR.glob("*.json")):
         for player in json.loads(path.read_text())["battle"].get("players") or []:
             if player.get("handle") in wanted:
                 ids.add(player["agentId"])
@@ -52,16 +67,24 @@ def expert_ids(handles):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--handles", help="只拿這些玩家的決定當參考答案（逗號分隔）")
+    parser.add_argument("--dragapult", action="store_true",
+                        help="只算這些玩家「用 Dragapult 的對局」，並納入 data/raw/scout/（例：--handles StartupBros,antge-poker-bot-01 --dragapult）")
     args = parser.parse_args()
-    experts = expert_ids(args.handles) if args.handles else None
+    paths = sorted(MATCH_DIR.glob("*.json"))
+    if args.dragapult:
+        seen = {p.name for p in paths}
+        paths += [p for p in sorted(SCOUT_DIR.glob("*.json")) if p.name not in seen]
+    experts = expert_ids(args.handles, paths) if args.handles else None
     strategy = load_strategy()
     ours, first = defaultdict(Counter), defaultdict(Counter)  # 類別 → Counter(hit/total)
     main_confusion = defaultdict(Counter)  # 贏家選的種類 → 我們選的種類
 
-    for path in sorted(MATCH_DIR.glob("*.json")):
+    for path in paths:
         match = json.loads(path.read_text())
         winner = (match["battle"].get("result") or {}).get("winnerAgentId")
         targets = [p["agentId"] for p in match["battle"]["players"] if p["agentId"] in experts] if experts else [winner]
+        if args.dragapult:
+            targets = [t for t in targets if plays_dragapult(strategy, match, t)]
         for target in targets:
             score_player(strategy, match, target, ours, first, main_confusion)
 
