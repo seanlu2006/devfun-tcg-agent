@@ -181,7 +181,7 @@ def bench_spread(attack_id):
 
 def spread_ko_prizes(board, spread):
     """招式放到對手備戰區的 spread 點傷害，最多能順便打倒幾張獎賞卡（從 HP 最低的開始塞，夠就算）。"""
-    if spread and opp_stadium_blocks_spread(board):
+    if spread and spread_blocked(board):
         return 0
     prizes, left = 0, spread
     for mon in sorted((m for m in board.opp.get("bench") or [] if m and (m.get("hp") or 0) > 0 and not counter_immune(m)),
@@ -376,7 +376,7 @@ class Board:
                 # 對手的 Battle Cage 會擋掉備戰區指示物 → 不算（Codex 敗局分析 5b1c90af：被當成 60 戰力，沒換 Drakloak）
                 # 備戰區全都帶 Mist／Rock Fighting Energy（指示物打不進去）也算 0（Codex 敗局分析 83ae9aed T13）
                 hittable = any(m and not counter_immune(m) for m in self.opp.get("bench") or [])
-                spread = bench_spread(attack_id) if hittable and not opp_stadium_blocks_spread(self) else 0
+                spread = bench_spread(attack_id) if hittable and not spread_blocked(self) else 0
                 best = max(best, hit + spread)
         return best
 
@@ -443,7 +443,8 @@ class Board:
                 # 「雙方戰鬥寶可夢每有 1 個能量多 N 傷害」（Teal Mask Ogerpon ex 的 Myriad Leaf Shower：以前只算基礎 30，實際打 210）
                 bonus = re.search(r"(\d+) more damage for each energy attached to both active", (attack_info(attack_id).get("text") or "").lower())
                 if bonus and dmg > 0:
-                    total = len(attacker.get("energies") or []) + len((self.my_active or {}).get("energies") or [])
+                    # 算 defender 上場後的能量（評估替補時不是看現在的戰鬥場；2026-10-19 檢討，Codex 審查第 11 條）
+                    total = len(attacker.get("energies") or []) + len(defender.get("energies") or [])
                     dmg += int(bonus.group(1)) * total
                 optional = re.search(r"you may [^.]*?(\d+) more damage", (attack_info(attack_id).get("text") or "").lower())
                 if optional and dmg > 0:
@@ -752,12 +753,16 @@ def score_attach(board, option):
 SPREAD_BLOCKING_STADIUMS = {"Battle Cage"}   # 擋掉「放到備戰區的傷害指示物」的競技場
 
 
+def spread_blocked(board):
+    """Battle Cage 在場：放到備戰區的傷害指示物全部無效（雙方都適用；我們的牌組沒有 Battle Cage，所以一定是對手的）。
+    估算任何一隻的 Phantom Dive 都用這個——以前用的是下面那個函式，前排是 Drakloak（沒有放指示物的招式）時
+    會回傳 False，於是把 Cage 下備戰區 Dragapult ex 的 60 點也算進戰力（2026-10-19 檢討，Codex 審查第 9 條）。"""
+    return stadium_name(board) in SPREAD_BLOCKING_STADIUMS
+
+
 def opp_stadium_blocks_spread(board):
-    """場上是對手放的、會擋 Phantom Dive 備戰區指示物的競技場，而我們的戰鬥場有放指示物的招式。"""
-    stadium = (board.current.get("stadium") or [None])[0]
-    if not stadium or card_info(card_id_of(stadium)).get("name") not in SPREAD_BLOCKING_STADIUMS:
-        return False
-    if isinstance(stadium, dict) and stadium.get("playerIndex") == board.my_index:
+    """Battle Cage 在場，而且我們的戰鬥場有放指示物的招式（用來決定要不要出 Jamming Tower 換掉它）。"""
+    if not spread_blocked(board):
         return False
     active = board.my_active or {}
     return any(bench_spread(a) for a in card_info(active.get("id")).get("attacks") or [])
@@ -767,9 +772,7 @@ def opp_stadium_blocks_ex(board):
     """對手放的 Neutralization Zone 擋住我們已經能打的 ex（Codex 敗局分析 dfa490a5、bdaf4054：Jamming Tower 被留到丟掉）。"""
     stadium = (board.current.get("stadium") or [None])[0]
     if not stadium or card_info(card_id_of(stadium)).get("name") not in EX_BLOCKING_STADIUMS:
-        return False
-    if isinstance(stadium, dict) and stadium.get("playerIndex") == board.my_index:
-        return False
+        return False   # 我們的牌組沒有 Neutralization Zone，在場就是對手的
     return any((card_info(m.get("id")).get("ex") or card_info(m.get("id")).get("megaEx")) and board.can_attack_now(m)
                for m in board.my_pokemon())
 
