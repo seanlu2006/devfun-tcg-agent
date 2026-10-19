@@ -50,6 +50,19 @@ def plays_dragapult(strategy, match, agent_id):
     return False
 
 
+def opponent_shows(strategy, match, agent_id, name):
+    """agent_id 的對手場上（戰鬥場或備戰區）出現過叫 name 的寶可夢。"""
+    for dp in match["decisions"]["decisionPoints"]:
+        cur = ((dp["perPlayer"].get(agent_id) or {}).get("obs") or {}).get("current")
+        if not cur:
+            continue
+        opp = cur["players"][1 - cur["yourIndex"]]
+        if any(strategy.card_info(strategy.card_id_of(m)).get("name") == name
+               for m in (opp.get("active") or []) + (opp.get("bench") or []) if m):
+            return True
+    return False
+
+
 def expert_ids(handles, paths=None):
     """handle → agentId：直接從對戰紀錄的玩家名單找（排行榜會變，掉出前幾名的高手查不到）。"""
     wanted = {h.strip() for h in handles.split(",") if h.strip()}
@@ -69,6 +82,7 @@ def main():
     parser.add_argument("--handles", help="只拿這些玩家的決定當參考答案（逗號分隔）")
     parser.add_argument("--dragapult", action="store_true",
                         help="只算這些玩家「用 Dragapult 的對局」，並納入 data/raw/scout/（例：--handles StartupBros,antge-poker-bot-01 --dragapult）")
+    parser.add_argument("--vs", help="只算對手場上出現過這張卡的對局（例：--vs Alakazam）")
     args = parser.parse_args()
     paths = sorted(MATCH_DIR.glob("*.json"))
     if args.dragapult:
@@ -85,6 +99,8 @@ def main():
         targets = [p["agentId"] for p in match["battle"]["players"] if p["agentId"] in experts] if experts else [winner]
         if args.dragapult:
             targets = [t for t in targets if plays_dragapult(strategy, match, t)]
+        if args.vs:
+            targets = [t for t in targets if opponent_shows(strategy, match, t, args.vs)]
         for target in targets:
             score_player(strategy, match, target, ours, first, main_confusion)
 
