@@ -495,6 +495,24 @@ class Board:
         return 20 * sum(1 for c in (self.opp_active or {}).get("energyCards") or []
                         if card_info(card_id_of(c)).get("name") == "Spiky Energy")
 
+    def gust_ko_with(self, mon):
+        """這回合 Boss's Orders 還能用（手上有、還沒用支援者）時，mon 上前後能 Boss 拉出來打倒的對手備戰寶可夢，
+        最多值幾張獎賞卡（mon 現在就付得起的招式）。用來看「撤退＋Boss＋攻擊」這種多步路線
+        （2026-10-19 9c02926b T21：剩 2 獎、手上有 Boss，對手後排 180 HP 的 Mega Kangaskhan ex（3 獎）；
+         前排 Meowth ex 沒招、Dragapult ex 打 Crustle 是 0，於是撤退 −10 分、結束回合，三回合後抽光牌庫輸掉）"""
+        if not mon or self.current.get("supporterPlayed"):
+            return 0
+        if not any(card_info(card_id_of(c)).get("name") in GUST_CARDS for c in self.me.get("hand") or []):
+            return 0
+        best = 0
+        for attack_id in card_info(mon.get("id")).get("attacks") or []:
+            if missing_energy(mon.get("energies"), attack_cost(self, mon, attack_id)):
+                continue
+            for target in self.opp.get("bench") or []:
+                if target and 0 < (target.get("hp") or 0) <= self.damage_against(attack_id, mon, target):
+                    best = max(best, prize_value(target.get("id")))
+        return best
+
     def survives_up_front(self, mon):
         """mon 上前攻擊後（吃 Spiky 反傷），撐得過對手下回合的攻擊。"""
         hp = (mon.get("hp") or 0) - (self.spiky_reflect() if self.damage_vs_opp(mon) > 0 else 0)
@@ -684,6 +702,13 @@ def score_main_option(board, option):
             return SCORE["attach_needed_active"] + 2
         if board.better_attacker_on_bench() or board.save_evolution_line() or board.losing_swap_available():
             return SCORE["retreat_ready"]
+        if board.power_now(board.my_active) == 0:
+            # 前排打不出東西：換上「Boss 拉出來就打得倒」的（拿完剩下的獎賞卡＝直接贏，排在幾乎所有動作前面）
+            gust = max([board.gust_ko_with(m) for m in board.me.get("bench") or []] or [0])
+            if gust >= len(board.me.get("prize") or []) > 0:
+                return SCORE["attach_needed_active"] + 3
+            if gust:
+                return SCORE["retreat_ready"]
         return -10
 
     if kind == OPT_END_TURN:
@@ -1471,7 +1496,9 @@ def pokemon_value(board, mon, side):
         # （2026-10-19 檢討：撤退看下回合、選人看現在，推出了會被 Crustle 下回合打倒的 90 HP Drakloak）
         survives = 1 if board.survives_up_front(mon) else 0
         # 試過「戰力相同時 Drakloak 排在配角後面」（Codex 建議）：高手一致率（挑一隻上戰鬥場）62% → 55～58%，不採用
-        return (survives if board.power_now(mon) >= 60 else 0, board.power_now(mon), energies,
+        # 自己撤退／換位（這回合還能出 Boss）：先挑「Boss 拉出來就打得倒」的，獎賞卡多的優先
+        gust = board.gust_ko_with(mon) if board.select.get("context") == CTX_SWITCH else 0
+        return (gust, survives if board.power_now(mon) >= 60 else 0, board.power_now(mon), energies,
                 atk[1] if atk else 0)
     if board.select.get("context") == CTX_SWITCH:
         # Boss's Orders：拉上來是為了打倒拿獎賞卡 →「打得倒的」先，其中獎賞卡多的優先，再來 HP 低的。
