@@ -1189,6 +1189,33 @@ def choose_main(board, legal):
         score = score_main_option(board, option)
         if best_score is None or score > best_score:
             best, best_score = action, score
+    chosen = single_pick(board, best) if best else None
+    hidden = board.hand_card_id(0) is None
+    if PLANNER and chosen and not stop_setting_up and (not hidden or (
+            PLAN_HIDDEN_HAND and chosen.get("type") in (OPT_RETREAT, OPT_ATTACK, OPT_END_TURN))):
+        setup_first = not is_skeleton(board, chosen) and best_score is not None and best_score > SETUP_MIN
+        if setup_first and card_info(board.hand_card_id(chosen.get("index", 0))).get("cardType") == CARD_SUPPORTER \
+                and chosen.get("type") == OPT_PLAY_FROM_HAND:
+            # 支援者一回合只能用一張：規劃器看到 Boss 路線能多拿獎賞卡時，先別用抽牌支援者
+            planned = plan_turn(board, legal)
+            if planned and planned[1].gust_ko:
+                setup_first = False
+        if not setup_first:
+            # 規劃器只當「戰術搜尋器」：多拿獎賞卡、或躲掉下回合直接輸，才推翻原本的選擇。
+            # （2026-10-20 校準：讓它全面接管攻擊／撤退時，24 組權重跟高手的一致數都不如原本規則（≤245 對 249／452），
+            #  高手比「按比例算曝險」更願意挨打換攻擊）
+            planned = plan_turn(board, legal)
+            base = plan_turn(board, [best])
+            if planned and base:
+                gains = planned[1].taken > base[1].taken
+                escapes = base[2] <= -50000 < planned[2]
+                if gains or escapes:
+                    remember_plan(board, planned[1])
+                    return planned[0]
+                if base[1].taken or base[2] <= -50000:
+                    remember_plan(board, base[1])    # 原本那步就在拿獎的路線上：後續換誰上場、Boss 拉誰照這條
+                else:
+                    _PLAN.clear()
     # 要出 Ultra Ball、而手上能用的 Crushing Hammer 會被當成丟牌代價：先把 Hammer 打出去
     # （Codex 對局分析 ab4ef295 T6、dc25404c T2：先 Ultra Ball 再丟掉能拆水能的 Hammer）
     chosen = single_pick(board, best) if best else None
@@ -1222,6 +1249,10 @@ def choose_other(board, legal):
             front = [a for a in legal if (single_pick(board, a) or {}).get("area") == AREA_ACTIVE]
             if front:
                 return front[0]   # Battle Cage：移到備戰區會被擋，放前排（Codex Crustle 研究 13a1d2d0 T27）
+    if PLANNER and ctx == CTX_SWITCH:
+        follow = planned_pick(board, legal, "switch_to") or planned_pick(board, legal, "gust")
+        if follow is not None:
+            return follow
     if ctx in (CTX_NEW_ACTIVE, CTX_SWITCH, CTX_OPP_TARGET):
         return pick_pokemon(board, legal)
     if card_info((board.select.get("effect") or {}).get("id")).get("name") in ENERGY_FETCH_CARDS:
@@ -1795,6 +1826,364 @@ def pick_cards(board, legal, value_fn, prefer):
         non_empty = [a for a in legal if a != "[]"]
         return non_empty[0] if non_empty else None
     return best
+
+
+
+# ---------------------------------------------------------------- 回合規劃器（2026-10-20）
+# 一步一步打分數看不到「連起來才划算」的路線（9c02926b T21：撤退＋Boss＋攻擊＝直接贏，單看每一步都不划算）。
+# 規劃器在我們自己的回合，把「戰術骨架」動作（進化、貼能量、撤退、Boss's Orders、攻擊／結束）的各種順序
+# 在盤面副本上推演到回合結束，評估：這回合拿幾獎、下回合對手打不打得倒我們的戰鬥場（送幾獎）、能量進度。
+# 抽牌／搜牌／特性這些結果是隨機的，不進規劃器：照原本的分數先做（先看到更多牌）。
+# 第一步的原本分數也算進評估（×PLAN_PRIOR）：戰術差不多時照舊規則，差很多時才改。
+PLANNER = True
+PLAN_PRIOR = 0.3
+SETUP_MIN = 0             # 原本分數 > 這個的非骨架動作（特性、搜牌、物品…）照原本規則先做
+PLAN_MAX_NODES = 4000     # 每次規劃最多推演幾個盤面（時間保險）
+PLAN_HIDDEN_HAND = False  # 測試用：看不到手牌（公開紀錄）時也規劃（只剩撤退／攻擊／結束可選），拿高手的選擇校準
+W_EXPOSE, W_OFFENSE, W_ENGINE = 90, 0.15, 0.5   # 評估權重：曝險（每獎）、下回合火力、Drakloak 引擎多算幾獎
+_PLAN = {}                # 這回合規劃好的後續選擇：{"turn": t, "switch_to": 簽名, "gust": 簽名}
+
+
+def _sig(mon):
+    return (mon or {}).get("id"), (mon or {}).get("hp"), tuple((mon or {}).get("energies") or [])
+
+
+def is_skeleton(board, option):
+    kind = option.get("type")
+    if kind in (OPT_ATTACH_ENERGY, OPT_EVOLVE, OPT_RETREAT, OPT_ATTACK, OPT_END_TURN):
+        return True
+    return kind == OPT_PLAY_FROM_HAND and card_info(board.hand_card_id(option.get("index", 0))).get("name") in GUST_CARDS
+
+
+class Sim:
+    """盤面副本：obs 深拷貝後直接改，評估時再包成 Board（沿用所有傷害／威脅估算）。"""
+
+    def __init__(self, obs, allowed_evolves):
+        self.obs = json.loads(json.dumps(obs))
+        self.cur = self.obs["current"]
+        self.me = self.cur["players"][self.cur.get("yourIndex", 0)]
+        self.opp = self.cur["players"][1 - self.cur.get("yourIndex", 0)]
+        self.taken = 0              # 這回合拿到的獎賞卡
+        self.discarded = 0          # 撤退丟掉的能量
+        self.evolved = 0
+        self.gust_used = False
+        self.gust_ko = False
+        self.attacked = False
+        self.hit = 0                # 打在沒倒下的對手戰鬥場上的比例（0～1）
+        self.spread_left = 0        # 備戰區指示物沒打倒的部分
+        self.first = None           # 第一步動作（原本的合法動作字串）
+        self.switch_to = None
+        self.gust = None
+        self.allowed_evolves = allowed_evolves   # {(進化卡 id, 被進化那隻的簽名)}
+        self.done_evolve = set()
+        self.trace = []             # 除錯用：這條路線做了什麼
+
+    def copy(self):
+        other = Sim.__new__(Sim)
+        other.__dict__.update(self.__dict__)
+        other.obs = json.loads(json.dumps(self.obs))
+        other.cur = other.obs["current"]
+        other.me = other.cur["players"][other.cur.get("yourIndex", 0)]
+        other.opp = other.cur["players"][1 - other.cur.get("yourIndex", 0)]
+        other.done_evolve = set(self.done_evolve)
+        other.trace = list(self.trace)
+        return other
+
+    def board(self):
+        return Board(self.obs)
+
+    def hand_names(self):
+        return [card_info(card_id_of(c)).get("name") for c in self.me.get("hand") or []]
+
+    def mons(self):
+        return [m for m in (self.me.get("active") or []) + (self.me.get("bench") or []) if m]
+
+    # --- 動作
+    def attach(self, hand_index, mon):
+        card = (self.me.get("hand") or [])[hand_index]
+        self.trace.append(f"貼{card_info(card_id_of(card)).get('energyType')}→{card_info(mon.get('id')).get('name')}")
+        mon.setdefault("energies", []).append(card_info(card_id_of(card)).get("energyType"))
+        mon.setdefault("energyCards", []).append(card)
+        del self.me["hand"][hand_index]
+        self.cur["energyAttached"] = True
+
+    def evolve(self, hand_index, mon):
+        card = (self.me.get("hand") or [])[hand_index]
+        new = card_info(card_id_of(card))
+        self.trace.append(f"進化{card_info(mon.get('id')).get('name')}→{new.get('name')}")
+        damage = (mon.get("maxHp") or 0) - (mon.get("hp") or 0)
+        self.done_evolve.add(_sig(mon))
+        mon["id"] = card_id_of(card)
+        mon["maxHp"] = new.get("hp") or mon.get("maxHp")
+        mon["hp"] = (new.get("hp") or 0) - damage
+        del self.me["hand"][hand_index]
+        self.evolved += 1
+
+    def retreat(self, bench_index):
+        active = self.me["active"][0]
+        cost = card_info(active.get("id")).get("retreatCost") or 0
+        self.discarded += cost
+        active["energies"] = (active.get("energies") or [])[cost:]
+        active["energyCards"] = (active.get("energyCards") or [])[cost:]
+        new = self.me["bench"][bench_index]
+        self.trace.append(f"撤退→{card_info(new.get('id')).get('name')}")
+        self.me["bench"][bench_index] = active
+        self.me["active"] = [new]
+        self.cur["retreated"] = True
+
+    def gust_play(self, hand_index, bench_index):
+        del self.me["hand"][hand_index]
+        target = self.opp["bench"][bench_index]
+        self.trace.append(f"Boss→{card_info(target.get('id')).get('name')}({target.get('hp')})")
+        self.opp["bench"][bench_index] = self.opp["active"][0]
+        self.opp["active"] = [target]
+        self.cur["supporterPlayed"] = True
+        self.gust_used = True
+
+    def attack(self, attack_id):
+        board = self.board()
+        attacker, defender = board.my_active, board.opp_active
+        self.attacked = True
+        self.trace.append(f"攻擊{attack_info(attack_id).get('name')}")
+        if defender:
+            dmg = board.damage_against(attack_id, attacker, defender)
+            hp = defender.get("hp") or 0
+            if dmg >= hp > 0:
+                self.taken += prize_value(defender.get("id"))
+                self.gust_ko = self.gust_ko or self.gust_used
+                self.opp["active"] = []
+            elif hp > 0:
+                self.hit = dmg / max(defender.get("maxHp") or hp, 1)
+        spread = bench_spread(attack_id)
+        if spread and not spread_blocked(board):
+            left = spread
+            for mon in sorted((m for m in self.opp.get("bench") or [] if m and (m.get("hp") or 0) > 0
+                               and not counter_immune(m)), key=lambda m: (-prize_value(m.get("id")), m.get("hp"))):
+                if mon["hp"] <= left:
+                    left -= mon["hp"]
+                    self.taken += prize_value(mon.get("id"))
+                    mon["hp"] = 0
+            self.spread_left = left
+
+
+def _threat_from(board, attacker, defender):
+    """attacker 當對手的戰鬥寶可夢時，下回合（再貼 1 能）能打 defender 多少。"""
+    if not attacker or not defender:
+        return 0
+    obs = dict(board.obs)
+    cur = dict(board.current)
+    players = list(cur["players"])
+    opp = dict(players[1 - board.my_index])
+    opp["active"] = [attacker]
+    players[1 - board.my_index] = opp
+    cur["players"] = players
+    obs["current"] = cur
+    return Board(obs).opp_threat_next(defender)
+
+
+def evaluate_plan(sim, start_need, my_prizes, opp_prizes, prior):
+    if my_prizes and sim.taken >= my_prizes:
+        return 100000 + prior
+    board = sim.board()
+    value = 100 * sim.taken + 25 * sim.hit + 0.1 * sim.spread_left
+    active = board.my_active
+    if active:
+        # 對手下回合會派最痛的那隻打我們：戰鬥場被打倒要換人，沒被打倒也可以撤退／換位
+        # （第一版只看對手現在的戰鬥場，於是「不打倒它」看起來比較安全，規劃器放過了現成的獎賞卡）
+        attackers = [m for m in (board.opp.get("active") or []) + (board.opp.get("bench") or [])
+                     if m and (m.get("hp") or 0) > 0]
+        threat = max([_threat_from(board, a, active) for a in attackers] or [0])
+        hp = max(active.get("hp") or 0, 1)
+        lost = prize_value(active.get("id"))
+        # 下回合會不會直接輸：對手可以用 Boss's Orders 拉我們任何一隻（Codex Alakazam 研究：擋刀後仍被 Boss 拉後排秒殺 4 次），
+        # 所以場上任何一隻「夠對手拿完獎賞卡、又打得倒」的都算。撤退躲不掉這種輸法，別為了它放棄現成的獎賞卡
+        for mon in board.my_pokemon():
+            if prize_value(mon.get("id")) >= opp_prizes and \
+                    max([_threat_from(board, a, mon) for a in attackers] or [0]) >= (mon.get("hp") or 0):
+                return -100000 + value + prior
+        # 曝險按比例：被打掉 94% 的血跟毫髮無傷不一樣（下下回合就倒）；2 獎的寶可夢放前排代價加倍
+        # （第一版只看「下回合倒不倒」，把沒能量的 320 HP Dragapult ex 換上去擋 300 的 Powerful Hand）
+        engine = W_ENGINE if card_info(active.get("id")).get("name") == "Drakloak" else 0
+        value -= W_EXPOSE * (lost + engine) * min(1.0, threat / hp)
+        # 下回合還能不能打（再手貼 1 個能量）：前排放能攻擊的，比放純擋刀的好一點
+        if board.energy_needed(active) <= 1:
+            filled = dict(active, energies=(active.get("energies") or []) + [
+                e if e != COLORLESS else 1 for e in missing_energy(active.get("energies"), plan_cost(active.get("id")))])
+            value += W_OFFENSE * min(board.power_now(filled), 200)
+    need = sum(board.energy_needed(m) for m in board.my_pokemon())
+    value += 6 * (start_need - need) + 4 * sim.evolved - 4 * sim.discarded
+    if sim.gust_used and not sim.gust_ko:
+        value -= 15
+    return value + prior
+
+
+def plan_turn(board, legal):
+    """回傳 (最好的第一步, 那條路線的 Sim, 評估值)；沒有可規劃的、或推演出錯就回傳 None（照原本的分數選）。"""
+    try:
+        return _plan_turn(board, legal)
+    except Exception:
+        return None
+
+
+def _plan_turn(board, legal):
+    allowed_evolves = set()
+    firsts = []
+    for action in legal:
+        option = single_pick(board, action)
+        if option is None or not is_skeleton(board, option):
+            continue
+        score = score_main_option(board, option)
+        kind = option.get("type")
+        if kind in (OPT_EVOLVE, OPT_ATTACK, OPT_ATTACH_ENERGY) and score < 0:
+            continue     # 原本規則明確否決的（留最後一隻 Drakloak、Tuck Tail 自殺…）不推演
+        if kind == OPT_EVOLVE:
+            target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex"))
+            allowed_evolves.add((board.hand_card_id(option.get("index", 0)), _sig(target)))
+        firsts.append((action, option, score))
+    if not firsts:
+        return None
+    turn = board.current.get("turn") or 0
+    my_prizes = len(board.me.get("prize") or [])
+    opp_prizes = len(board.opp.get("prize") or []) or 6
+    start_need = sum(board.energy_needed(m) for m in board.my_pokemon())
+    budget = [PLAN_MAX_NODES]
+    best = [None, None, None]
+
+    def finish(sim, prior):
+        value = evaluate_plan(sim, start_need, my_prizes, opp_prizes, prior)
+        if best[2] is None or value > best[2]:
+            best[0], best[1], best[2] = sim.first, sim, value
+
+    def expand(sim, prior, stage):
+        budget[0] -= 1
+        if budget[0] < 0:
+            return
+        me, cur = sim.me, sim.cur
+        status_locked = me.get("asleep") or me.get("paralyzed")
+        # 結束（不攻擊）
+        finish(sim, prior)
+        # 攻擊
+        active = (me.get("active") or [None])[0]
+        if active and turn >= 2 and not status_locked:
+            for attack_id in card_info(active.get("id")).get("attacks") or []:
+                text = (attack_info(attack_id).get("text") or "").lower()
+                if "into your hand" in text:
+                    continue
+                if missing_energy(active.get("energies"), attack_cost(sim.board(), active, attack_id)):
+                    continue
+                nxt = sim.copy()
+                nxt.attack(attack_id)
+                finish(nxt, prior)
+        hand = me.get("hand") or []
+        # 骨架順序：進化 →（貼能量、撤退，誰先都行）→ Boss → 攻擊／結束
+        if stage <= 0:
+            for i, card in enumerate(hand):
+                cid = card_id_of(card)
+                for mon in sim.mons():
+                    if (cid, _sig(mon)) in sim.allowed_evolves and _sig(mon) not in sim.done_evolve:
+                        nxt = sim.copy()
+                        idx = [_sig(m) for m in nxt.mons()].index(_sig(mon))
+                        nxt.evolve(i, nxt.mons()[idx])
+                        expand(nxt, prior, 0)
+        if stage <= 1 and not cur.get("energyAttached"):
+            seen = set()
+            for i, card in enumerate(hand):
+                etype = card_info(card_id_of(card)).get("energyType")
+                if card_info(card_id_of(card)).get("cardType") != CARD_BASIC_ENERGY or etype in seen:
+                    continue
+                seen.add(etype)
+                for k, mon in enumerate(sim.mons()):
+                    nxt = sim.copy()
+                    nxt.attach(i, nxt.mons()[k])
+                    expand(nxt, prior, 1)
+        if stage <= 1 and not cur.get("retreated") and not status_locked and active and me.get("bench"):
+            cost = card_info(active.get("id")).get("retreatCost") or 0
+            if len(active.get("energies") or []) >= cost:
+                for b, mon in enumerate(me.get("bench") or []):
+                    if not mon:
+                        continue
+                    nxt = sim.copy()
+                    nxt.retreat(b)
+                    if nxt.switch_to is None:
+                        nxt.switch_to = _sig(nxt.me["active"][0])
+                    expand(nxt, prior, 1)
+        if stage <= 2 and not cur.get("supporterPlayed"):
+            for i, card in enumerate(hand):
+                if card_info(card_id_of(card)).get("name") not in GUST_CARDS:
+                    continue
+                for b, mon in enumerate(sim.opp.get("bench") or []):
+                    if not mon or (mon.get("hp") or 0) <= 0:
+                        continue
+                    nxt = sim.copy()
+                    nxt.gust = _sig(mon)
+                    nxt.gust_play(i, b)
+                    expand(nxt, prior, 3)
+                break
+
+    for action, option, score in firsts:
+        sim = Sim(board.obs, allowed_evolves)
+        sim.first = action
+        kind = option.get("type")
+        prior = PLAN_PRIOR * score
+        if kind == OPT_END_TURN:
+            finish(sim, prior)
+        elif kind == OPT_ATTACK:
+            if "into your hand" in (attack_info(option.get("attackId")).get("text") or "").lower():
+                continue
+            sim.attack(option.get("attackId"))
+            finish(sim, prior)
+        elif kind == OPT_ATTACH_ENERGY:
+            target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex"))
+            idx = [_sig(m) for m in sim.mons()].index(_sig(target)) if target else None
+            if idx is None or board.hand_card_id(option.get("index", 0)) is None:
+                continue
+            sim.attach(option.get("index", 0), sim.mons()[idx])
+            expand(sim, prior, 1)
+        elif kind == OPT_EVOLVE:
+            target = board.in_play(option.get("inPlayArea"), option.get("inPlayIndex"))
+            if not target or board.hand_card_id(option.get("index", 0)) is None:
+                continue
+            idx = [_sig(m) for m in sim.mons()].index(_sig(target))
+            sim.evolve(option.get("index", 0), sim.mons()[idx])
+            expand(sim, prior, 0)
+        elif kind == OPT_RETREAT:
+            for b, mon in enumerate(sim.me.get("bench") or []):
+                if not mon:
+                    continue
+                nxt = sim.copy()
+                nxt.retreat(b)
+                nxt.switch_to = _sig(nxt.me["active"][0])
+                expand(nxt, prior, 1)
+        elif kind == OPT_PLAY_FROM_HAND:
+            for b, mon in enumerate(sim.opp.get("bench") or []):
+                if not mon or (mon.get("hp") or 0) <= 0:
+                    continue
+                nxt = sim.copy()
+                nxt.gust = _sig(mon)
+                nxt.gust_play(option.get("index", 0), b)
+                expand(nxt, prior, 3)
+    if best[0] is None:
+        return None
+    return best[0], best[1], best[2]
+
+
+def remember_plan(board, sim):
+    _PLAN.clear()
+    _PLAN.update(turn=board.current.get("turn"), switch_to=sim.switch_to, gust=sim.gust)
+
+
+def planned_pick(board, legal, key):
+    """撤退後選誰上場、Boss 拉誰：照這回合規劃好的那隻（找得到才用）。"""
+    want = _PLAN.get(key) if _PLAN.get("turn") == board.current.get("turn") else None
+    if want is None:
+        return None
+    side = "me" if key == "switch_to" else "opp"
+    for action in legal:
+        option = single_pick(board, action)
+        if option and board.option_side(option) == side \
+                and _sig(board.in_play(option.get("area"), option.get("index"), side)) == want:
+            return action
+    return None
 
 
 def decide(obs, legal):

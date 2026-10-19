@@ -82,6 +82,9 @@ def main():
     parser.add_argument("--handles", help="只拿這些玩家的決定當參考答案（逗號分隔）")
     parser.add_argument("--dragapult", action="store_true",
                         help="只算這些玩家「用 Dragapult 的對局」，並納入 data/raw/scout/（例：--handles StartupBros,antge-poker-bot-01 --dragapult）")
+    parser.add_argument("--plan-hidden", action="store_true",
+                        help="規劃器在看不到手牌時也啟動（只比撤退／攻擊／結束），用來校準規劃器的權重")
+    parser.add_argument("--weights", help="覆寫規劃器權重，例：W_EXPOSE=60,W_OFFENSE=0.3")
     parser.add_argument("--vs", help="只算對手場上出現過這張卡的對局（例：--vs Alakazam）")
     args = parser.parse_args()
     paths = sorted(MATCH_DIR.glob("*.json"))
@@ -90,6 +93,12 @@ def main():
         paths += [p for p in sorted(SCOUT_DIR.glob("*.json")) if p.name not in seen]
     experts = expert_ids(args.handles, paths) if args.handles else None
     strategy = load_strategy()
+    if args.plan_hidden:
+        strategy.PLAN_HIDDEN_HAND = True
+    for item in (args.weights or "").split(","):
+        if "=" in item:
+            k, v = item.split("=")
+            setattr(strategy, k.strip(), float(v))
     ours, first = defaultdict(Counter), defaultdict(Counter)  # 類別 → Counter(hit/total)
     main_confusion = defaultdict(Counter)  # 贏家選的種類 → 我們選的種類
 
