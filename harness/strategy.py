@@ -1307,8 +1307,13 @@ def energy_urgency(board, energy_type, mon):
     """把這個顏色的能量貼給 mon 有多急：計畫招式缺這個顏色才算；貼完就湊齊、進化階段高、在戰鬥場的更急。"""
     if not mon or energy_type is None:
         return 0
-    missing = missing_energy(mon.get("energies"), plan_cost(mon.get("id")))
-    if energy_type not in missing:
+    cost = plan_cost(mon.get("id"))
+    taxed = stadium_name(board) in TERA_TAX_STADIUMS and card_info(mon.get("id")).get("name") in TERA_POKEMON
+    if taxed:
+        cost = cost + [COLORLESS]   # Nighttime Mine：太晶要多 1 個無色（2026-10-19 Codex Alakazam 研究：f417dc83 T9、
+        #                            a070e01b T5 把 Crispin 的能量貼給別隻，Dragapult 差這 1 個打不出 Phantom Dive）
+    missing = missing_energy(mon.get("energies"), cost)
+    if energy_type not in missing and not (taxed and COLORLESS in missing):
         return 1 if COLORLESS in missing else 0
     card = card_info(mon.get("id"))
     return 10 + (5 if len(missing) == 1 else 0) + (2 if card.get("stage2") else 1 if card.get("stage1") else 0) \
@@ -1389,9 +1394,11 @@ def pick_counter_target(board, legal):
         # 高手 73 次照舊規則（集中放已受傷的），只有 10 次照新規則 → 不採用
         energies = len(mon.get("energies") or [])   # 完全同分時打能量多的（快能接替攻擊；四位高手 9 比 6）
         if hp <= remain:
-            key = (1, prize_value(mon.get("id")), hp, hurt, 0, energies)
+            # 獎賞卡一樣多時，先收還能進化的（拆對手的進化線；Codex Alakazam 研究：高手 0/9 → 8/9）
+            line = 1 if card_info(mon.get("id")).get("name") in {"Abra", "Kadabra"} else 0
+            key = (1, prize_value(mon.get("id")), line, hp, hurt, 0, energies)
         else:
-            key = (0, 0, 0, hurt, -hp, energies)
+            key = (0, 0, 0, 0, hurt, -hp, energies)
         scored.append((key, action))
     return max(scored)[1] if scored else None
 
