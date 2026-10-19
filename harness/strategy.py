@@ -1923,6 +1923,7 @@ class Sim:
         self.trace.append(f"進化{card_info(mon.get('id')).get('name')}→{new.get('name')}")
         damage = (mon.get("maxHp") or 0) - (mon.get("hp") or 0)
         self.done_evolve.add(_sig(mon))
+        mon["_evolved"] = True   # 同一隻一回合只能進化一次（4668aa13 T5：推演成 Dreepy→Drakloak→Dragapult ex，實際不合法）
         mon["id"] = card_id_of(card)
         mon["maxHp"] = new.get("hp") or mon.get("maxHp")
         mon["hp"] = (new.get("hp") or 0) - damage
@@ -2092,7 +2093,8 @@ def _plan_turn(board, legal):
             for i, card in enumerate(hand):
                 cid = card_id_of(card)
                 for mon in sim.mons():
-                    if (cid, _sig(mon)) in sim.allowed_evolves and _sig(mon) not in sim.done_evolve:
+                    if (cid, _sig(mon)) in sim.allowed_evolves and _sig(mon) not in sim.done_evolve \
+                            and not mon.get("_evolved"):
                         nxt = sim.copy()
                         idx = [_sig(m) for m in nxt.mons()].index(_sig(mon))
                         nxt.evolve(i, nxt.mons()[idx])
