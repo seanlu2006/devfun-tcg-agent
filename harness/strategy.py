@@ -1194,18 +1194,25 @@ def choose_main(board, legal):
     if PLANNER and chosen and not stop_setting_up and (not hidden or (
             PLAN_HIDDEN_HAND and chosen.get("type") in (OPT_RETREAT, OPT_ATTACK, OPT_END_TURN))):
         setup_first = not is_skeleton(board, chosen) and best_score is not None and best_score > SETUP_MIN
-        if setup_first and card_info(board.hand_card_id(chosen.get("index", 0))).get("cardType") == CARD_SUPPORTER \
-                and chosen.get("type") == OPT_PLAY_FROM_HAND:
-            # 支援者一回合只能用一張：規劃器看到 Boss 路線能多拿獎賞卡時，先別用抽牌支援者
+        chosen_card = card_info(board.hand_card_id(chosen.get("index", 0))) if chosen.get("type") == OPT_PLAY_FROM_HAND else {}
+        if setup_first and (chosen_card.get("cardType") == CARD_SUPPORTER or chosen_card.get("name") in HAND_RESET_CARDS):
+            # 支援者一回合只能用一張：規劃器看到 Boss 路線能多拿獎賞卡時，先別用抽牌支援者。
+            # 會洗掉／丟掉手牌的卡（Unfair Stamp、Ultra Ball…）也等拿獎路線用完手牌再出
+            # （2026-10-20 481c1724 T9：Stamp 先出，把計畫要用的 Boss's Orders 洗回牌庫，少拿 1 獎）
             planned = plan_turn(board, legal)
-            if planned and planned[1].gust_ko:
+            if planned and planned[1].taken and (planned[1].gust_ko or (
+                    planned[1].used_hand and chosen_card.get("name") in HAND_RESET_CARDS)):
                 setup_first = False
         if not setup_first:
             # 規劃器只當「戰術搜尋器」：多拿獎賞卡、或躲掉下回合直接輸，才推翻原本的選擇。
             # （2026-10-20 校準：讓它全面接管攻擊／撤退時，24 組權重跟高手的一致數都不如原本規則（≤245 對 249／452），
             #  高手比「按比例算曝險」更願意挨打換攻擊）
             planned = plan_turn(board, legal)
-            base = plan_turn(board, [best])
+            # 原本選的不是骨架動作（只會發生在上面決定「先別出這張」時）：有拿獎路線就照路線走
+            base = plan_turn(board, [best]) if is_skeleton(board, chosen) else None
+            if planned and not is_skeleton(board, chosen) and planned[1].taken:
+                remember_plan(board, planned[1])
+                return planned[0]
             if planned and base:
                 gains = planned[1].taken > base[1].taken
                 escapes = base[2] <= -50000 < planned[2]
@@ -1841,6 +1848,7 @@ SETUP_MIN = 0             # 原本分數 > 這個的非骨架動作（特性、�
 PLAN_MAX_NODES = 4000     # 每次規劃最多推演幾個盤面（時間保險）
 PLAN_HIDDEN_HAND = False  # 測試用：看不到手牌（公開紀錄）時也規劃（只剩撤退／攻擊／結束可選），拿高手的選擇校準
 W_EXPOSE, W_OFFENSE, W_ENGINE = 90, 0.15, 0.5   # 評估權重：曝險（每獎）、下回合火力、Drakloak 引擎多算幾獎
+HAND_RESET_CARDS = {"Unfair Stamp", "Judge", "Lillie's Determination", "Lillie’s Determination", "Ultra Ball"}
 _PLAN = {}                # 這回合規劃好的後續選擇：{"turn": t, "switch_to": 簽名, "gust": 簽名}
 
 
@@ -1877,6 +1885,7 @@ class Sim:
         self.allowed_evolves = allowed_evolves   # {(進化卡 id, 被進化那隻的簽名)}
         self.done_evolve = set()
         self.trace = []             # 除錯用：這條路線做了什麼
+        self.used_hand = False      # 路線用到手上的牌（能量、進化卡、Boss）
 
     def copy(self):
         other = Sim.__new__(Sim)
@@ -1906,6 +1915,7 @@ class Sim:
         mon.setdefault("energyCards", []).append(card)
         del self.me["hand"][hand_index]
         self.cur["energyAttached"] = True
+        self.used_hand = True
 
     def evolve(self, hand_index, mon):
         card = (self.me.get("hand") or [])[hand_index]
@@ -1918,6 +1928,7 @@ class Sim:
         mon["hp"] = (new.get("hp") or 0) - damage
         del self.me["hand"][hand_index]
         self.evolved += 1
+        self.used_hand = True
 
     def retreat(self, bench_index):
         active = self.me["active"][0]
@@ -1939,6 +1950,7 @@ class Sim:
         self.opp["active"] = [target]
         self.cur["supporterPlayed"] = True
         self.gust_used = True
+        self.used_hand = True
 
     def attack(self, attack_id):
         board = self.board()
